@@ -5,12 +5,14 @@
 # noticias.json junto com o site.
 #
 # Para funcionar: Settings → Pages → Build and deployment → Source: "GitHub Actions".
+# Este arquivo precisa ficar exatamente em .github/workflows/noticias.yml no repositório.
+# A cada execução, a aba Actions mostra um resumo com o status de cada fonte.
 
 name: Cyberwave Radio - site e notícias
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -37,22 +39,35 @@ jobs:
         with:
           node-version: 22
 
+      - id: pages
+        uses: actions/configure-pages@v5
+
       - name: Buscar manchetes (CNN Brasil, BBC News Brasil, Fox News, Revista Oeste, Ancapsu)
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
         run: |
           cat > /tmp/noticias.mjs <<'SCRIPT'
-          import { writeFileSync } from "node:fs";
+          import { writeFileSync, appendFileSync } from "node:fs";
+
+          const gnews = (q, lang) =>
+            lang === "en"
+              ? "https://news.google.com/rss/search?q=" + encodeURIComponent(q) + "&hl=en-US&gl=US&ceid=US:en"
+              : "https://news.google.com/rss/search?q=" + encodeURIComponent(q) + "&hl=pt-BR&gl=BR&ceid=BR:pt-419";
 
           // Fontes. Cada uma tenta os endereços em ordem e usa o primeiro que responder.
+          // O último endereço (Google Notícias) é o plano B quando o site bloqueia os servidores do GitHub.
+          // Manter igual à lista NEWS_SOURCES em src/lib/news.ts.
           const SOURCES = [
-            { id: "cnn", name: "CNN Brasil", lang: "pt", urls: ["https://www.cnnbrasil.com.br/internacional/feed/", "https://www.cnnbrasil.com.br/feed/"] },
-            { id: "bbc", name: "BBC News Brasil", lang: "pt", urls: ["https://feeds.bbci.co.uk/portuguese/rss.xml"] },
-            { id: "fox", name: "Fox News", lang: "en", urls: ["https://moxie.foxnews.com/google-publisher/world.xml", "https://moxie.foxnews.com/google-publisher/latest.xml"] },
-            { id: "oeste", name: "Revista Oeste", lang: "pt", urls: ["https://revistaoeste.com/mundo/feed/", "https://revistaoeste.com/feed/"] },
-            { id: "ancapsu", name: "Ancapsu", lang: "pt", urls: ["https://www.youtube.com/feeds/videos.xml?channel_id=UCLTWPE7XrHEe8m_xAmNbQ-Q"] },
+            { id: "cnn", name: "CNN Brasil", lang: "pt", maxAgeDays: 3, urls: ["https://www.cnnbrasil.com.br/internacional/feed/", "https://www.cnnbrasil.com.br/feed/", gnews("site:cnnbrasil.com.br when:2d", "pt")] },
+            { id: "bbc", name: "BBC News Brasil", lang: "pt", maxAgeDays: 3, urls: ["https://feeds.bbci.co.uk/portuguese/rss.xml"] },
+            { id: "fox", name: "Fox News", lang: "en", maxAgeDays: 3, urls: ["https://moxie.foxnews.com/google-publisher/world.xml", "https://moxie.foxnews.com/google-publisher/latest.xml", gnews("site:foxnews.com when:2d", "en")] },
+            { id: "oeste", name: "Revista Oeste", lang: "pt", maxAgeDays: 3, urls: ["https://revistaoeste.com/mundo/feed/", "https://revistaoeste.com/feed/", gnews("site:revistaoeste.com when:2d", "pt")] },
+            { id: "ancapsu", name: "Ancapsu", lang: "pt", maxAgeDays: 14, urls: ["https://www.youtube.com/feeds/videos.xml?channel_id=UCLTWPE7XrHEe8m_xAmNbQ-Q"] },
           ];
           const PER_SOURCE = 8;
-          const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+          const DAY_MS = 24 * 60 * 60 * 1000;
           const OUT = process.argv[2] || "noticias.json";
+          const SITE_URL = String(process.env.SITE_URL || "").replace(/\/+$/, "");
           const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 CyberwaveRadio/1.0";
           const BREAKING = /(^|[^\p{L}\p{N}])(urgente|plant[aã]o|[uú]ltima hora|ao vivo|alerta|breaking|live updates?|just in|developing)(?=$|[^\p{L}\p{N}])/iu;
 
@@ -83,12 +98,15 @@ jobs:
             }
           };
 
-          function parse(xml) {
+          // Google Notícias põe " - Nome do veículo" no fim do título.
+          const tidyTitle = (title, url) => (url.startsWith("https://news.google.com/") ? title.replace(/\s+[-–]\s+[^-–]{2,40}$/, "") : title);
+
+          function parse(xml, url) {
             const atom = /<feed[\s>]/i.test(xml) && /<entry[\s>]/i.test(xml);
             const re = atom ? /<entry[\s>][\s\S]*?<\/entry>/gi : /<item[\s>][\s\S]*?<\/item>/gi;
             const out = [];
             for (const [block] of xml.matchAll(re)) {
-              const title = text(tag(block, "title")).slice(0, 280);
+              const title = tidyTitle(text(tag(block, "title")), url).slice(0, 280);
               let link = "";
               if (atom) {
                 link = (/<link[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i.exec(block) || /<link[^>]*href=["']([^"']+)["']/i.exec(block) || [])[1] || "";
@@ -117,7 +135,7 @@ jobs:
                   lastError = `HTTP ${res.status}`;
                   continue;
                 }
-                const items = parse(await res.text());
+                const items = parse(await res.text(), url);
                 if (items.length === 0) {
                   lastError = "feed vazio";
                   continue;
@@ -130,36 +148,235 @@ jobs:
             throw new Error(lastError);
           }
 
+          // Manchetes publicadas na execução anterior: se uma fonte falhar agora, reaproveita as dela.
+          async function previous() {
+            if (!SITE_URL) return [];
+            try {
+              const res = await fetch(SITE_URL + "/noticias.json?t=" + Date.now(), { headers: { "user-agent": UA }, signal: AbortSignal.timeout(15000) });
+              if (!res.ok) {
+                console.log("Arquivo anterior: HTTP " + res.status + " (normal na primeira execução)");
+                return [];
+              }
+              const data = await res.json();
+              return Array.isArray(data && data.items) ? data.items : [];
+            } catch (err) {
+              console.log("Arquivo anterior: indisponível (" + String((err && err.message) || err).slice(0, 80) + ")");
+              return [];
+            }
+          }
+          // Mensagem segura para as anotações do GitHub (sem quebras de linha nem %).
+          const note = (s) => String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
           const now = Date.now();
+          const old = await previous();
           const sources = [];
           const items = [];
           await Promise.all(
             SOURCES.map(async (src) => {
+              const recent = (i) => i.publishedAt === null || (now - i.publishedAt < src.maxAgeDays * DAY_MS && i.publishedAt - now < 60 * 60 * 1000);
               try {
                 const { items: got, url } = await load(src);
                 const fresh = got
-                  .filter((i) => i.publishedAt === null || now - i.publishedAt < MAX_AGE_MS)
+                  .filter(recent)
                   .sort((a, b) => (b.publishedAt ?? 0) - (a.publishedAt ?? 0))
                   .slice(0, PER_SOURCE);
                 for (const i of fresh) {
                   items.push({ source: src.id, sourceName: src.name, lang: src.lang, title: i.title, link: i.link, publishedAt: i.publishedAt, breaking: BREAKING.test(i.title) });
                 }
                 sources.push({ id: src.id, name: src.name, ok: true, count: fresh.length, feed: url });
-                console.log(`OK   ${src.name}: ${fresh.length} manchetes (${url})`);
+                console.log("OK    " + src.name + ": " + fresh.length + " manchetes (" + url + ")");
               } catch (err) {
-                sources.push({ id: src.id, name: src.name, ok: false, count: 0, error: String(err.message || err) });
-                console.log(`FALHA ${src.name}: ${err.message || err}`);
+                const error = String((err && err.message) || err).slice(0, 120);
+                const kept = old
+                  .filter((i) => i && i.source === src.id && typeof i.title === "string" && typeof i.link === "string")
+                  .map((i) => ({ ...i, publishedAt: typeof i.publishedAt === "number" ? i.publishedAt : null }))
+                  .filter((i) => i.publishedAt !== null && recent(i))
+                  .slice(0, PER_SOURCE);
+                items.push(...kept);
+                sources.push({ id: src.id, name: src.name, ok: false, count: kept.length, error, kept: kept.length > 0 });
+                console.log("FALHA " + src.name + ": " + error + (kept.length ? " (mantidas " + kept.length + " manchetes da execução anterior)" : ""));
+                console.log("::warning title=Fonte sem resposta::" + note(src.name + ": " + error));
               }
             }),
           );
           sources.sort((a, b) => SOURCES.findIndex((s) => s.id === a.id) - SOURCES.findIndex((s) => s.id === b.id));
           items.sort((a, b) => (b.publishedAt ?? 0) - (a.publishedAt ?? 0));
           writeFileSync(OUT, JSON.stringify({ updatedAt: new Date(now).toISOString(), sources, items }, null, 1));
-          console.log(`${items.length} manchetes gravadas em ${OUT}`);
+          console.log(items.length + " manchetes gravadas em " + OUT);
+          if (items.length === 0) {
+            console.log("::error title=Nenhuma manchete::" + note("Nenhuma fonte respondeu. O site vai tentar a conexão direta pelo navegador."));
+          }
+
+          // Resumo na página da execução (aba Actions)
+          if (process.env.GITHUB_STEP_SUMMARY) {
+            const esc = (s) => String(s).replace(/[|<>]/g, " ");
+            const rows = sources.map((s) =>
+              "| " + esc(s.name) + " | " + (s.ok ? "✅ OK" : "❌ Falhou") + " | " + s.count + " | " + esc(s.ok ? s.feed : s.error + (s.kept ? " (manchetes anteriores mantidas)" : "")) + " |",
+            );
+            appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              ["### Notícias da Cyberwave Radio", "", "| Fonte | Status | Manchetes | Detalhe |", "|---|---|---|---|", ...rows, "", "**Total:** " + items.length + " manchetes", ""].join("\n"),
+            );
+          }
           SCRIPT
           node /tmp/noticias.mjs noticias.json
 
-      - uses: actions/configure-pages@v5
+      # ---------- Voz da ANDRA-18 ----------
+      # Grava as falas e as manchetes em MP3 com uma voz neural feminina, para a apresentadora ter
+      # a mesma voz em qualquer aparelho e navegador. Os áudios ficam guardados entre execuções e
+      # só os textos novos são gravados de novo.
+      #
+      # Voz: Microsoft Azure AI Speech (oficial; plano gratuito F0 de 500 mil caracteres/mês) quando
+      # os segredos AZURE_SPEECH_KEY e AZURE_SPEECH_REGION estiverem cadastrados em
+      # Settings → Secrets and variables → Actions. Sem os segredos, usa o pacote edge-tts
+      # (mesmas vozes neurais, sem cadastro, serviço não oficial que pode parar sem aviso).
+      # Trocar a voz: variável ANDRA_VOZ (ex.: pt-BR-FranciscaNeural).
+      # Se esta etapa falhar, o site é publicado assim mesmo e usa a voz feminina do navegador.
+      - name: Restaurar áudios já gravados
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/cyberwave-voz
+          key: voz-${{ github.run_id }}
+          restore-keys: voz-
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Gravar a voz da ANDRA-18
+        continue-on-error: true
+        timeout-minutes: 12
+        env:
+          AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
+          AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
+          ANDRA_VOZ: ${{ vars.ANDRA_VOZ }}
+        run: |
+          if [ -z "$AZURE_SPEECH_KEY" ]; then pip install --quiet --disable-pip-version-check "edge-tts>=6.1,<8"; fi
+          cat > /tmp/voz.py <<'SCRIPT'
+          import asyncio, hashlib, html, json, os, re, shutil, sys, time, urllib.request
+          from pathlib import Path
+
+          CACHE = Path(os.path.expanduser("~/.cache/cyberwave-voz")); CACHE.mkdir(parents=True, exist_ok=True)
+          OUT = Path("voz"); OUT.mkdir(exist_ok=True)
+          KEY = os.environ.get("AZURE_SPEECH_KEY", "").strip()
+          REGION = os.environ.get("AZURE_SPEECH_REGION", "").strip()
+          ENGINE = "azure" if KEY and REGION else "edge"
+          VOICES = [v.strip() for v in (os.environ.get("ANDRA_VOZ") or "pt-BR-ThalitaMultilingualNeural,pt-BR-FranciscaNeural").split(",") if v.strip()]
+          RATE = "+4%"
+          MAX_NEWS = 40
+
+          def lead(it):
+              if it.get("source") == "ancapsu": return "No canal Ancapsu"
+              if it.get("lang") == "en": return "Na " + it["sourceName"] + ", em inglês"
+              return "Segundo a " + it["sourceName"]
+
+          def file_for(voice, text):
+              h = hashlib.sha1(f"{ENGINE}|{voice}|{RATE}|{text}".encode()).hexdigest()[:20]
+              return h + ".mp3"
+
+          def azure(text, voice, path):
+              ssml = (f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='pt-BR'>"
+                      f"<voice name='{voice}'><prosody rate='{RATE}'>{html.escape(text)}</prosody></voice></speak>")
+              req = urllib.request.Request(
+                  f"https://{REGION}.tts.speech.microsoft.com/cognitiveservices/v1", data=ssml.encode("utf-8"), method="POST",
+                  headers={"Ocp-Apim-Subscription-Key": KEY, "Content-Type": "application/ssml+xml",
+                           "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3", "User-Agent": "CyberwaveRadio"})
+              with urllib.request.urlopen(req, timeout=40) as r:
+                  data = r.read()
+              if len(data) < 500: raise RuntimeError("áudio vazio")
+              path.write_bytes(data)
+
+          async def edge(text, voice, path):
+              import edge_tts
+              tmp = path.with_suffix(".tmp")
+              await asyncio.wait_for(edge_tts.Communicate(text, voice, rate=RATE).save(str(tmp)), 60)
+              if tmp.stat().st_size < 500: raise RuntimeError("áudio vazio")
+              tmp.replace(path)
+
+          async def synth(text, voice, path):
+              if ENGINE == "azure": await asyncio.to_thread(azure, text, voice, path)
+              else: await edge(text, voice, path)
+
+          async def main():
+              m = re.search(r'<script type="application/json" id="andra-frases">(.*?)</script>', Path("index.html").read_text(encoding="utf-8"), re.S)
+              phrases = json.loads(m.group(1)) if m else {}
+              if not m: print("::warning title=Voz::index.html sem o bloco andra-frases (index.html antigo?)")
+              news_path = Path("noticias.json")
+              news = json.loads(news_path.read_text(encoding="utf-8")) if news_path.exists() else {"items": []}
+              items = news.get("items", [])
+              for it in items:
+                  it.pop("audio", None)
+                  it["speech"] = lead(it) + ": " + it["title"]
+
+              # Escolhe a voz: a primeira da lista que funcionar.
+              voice = None
+              for v in VOICES:
+                  probe = CACHE / file_for(v, "Cyberwave Radio.")
+                  try:
+                      if not probe.exists(): await synth("Cyberwave Radio.", v, probe)
+                      voice = v; break
+                  except Exception as e:
+                      print(f"Voz {v} indisponível: {str(e)[:120]}")
+              if not voice:
+                  print("::warning title=Voz::Nenhuma voz neural respondeu; o site vai usar a voz do navegador.")
+                  return 1
+
+              texts = {}
+              for pid, text in phrases.items(): texts[text] = file_for(voice, text)
+              for it in items[:MAX_NEWS]: texts[it["speech"]] = file_for(voice, it["speech"])
+
+              sem = asyncio.Semaphore(4)
+              made = failed = 0
+              async def one(text, name):
+                  nonlocal made, failed
+                  path = CACHE / name
+                  if path.exists():
+                      os.utime(path); return
+                  async with sem:
+                      for attempt in range(2):
+                          try:
+                              await synth(text, voice, path); made += 1; return
+                          except Exception as e:
+                              err = str(e)[:120]
+                              await asyncio.sleep(1.5)
+                      failed += 1
+                      print(f"falhou: {text[:60]}… ({err})")
+              await asyncio.gather(*(one(t, n) for t, n in texts.items()))
+
+              ready = lambda name: (CACHE / name).exists()
+              out_phrases = {}
+              for pid, text in phrases.items():
+                  name = texts[text]
+                  if ready(name):
+                      shutil.copyfile(CACHE / name, OUT / name); out_phrases[pid] = "voz/" + name
+              for it in items[:MAX_NEWS]:
+                  name = texts[it["speech"]]
+                  if ready(name):
+                      shutil.copyfile(CACHE / name, OUT / name); it["audio"] = "voz/" + name
+              news_path.write_text(json.dumps(news, ensure_ascii=False, indent=1), encoding="utf-8")
+              (OUT / "manifest.json").write_text(json.dumps({"updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "engine": ENGINE, "voice": voice, "phrases": out_phrases}, ensure_ascii=False), encoding="utf-8")
+
+              # Limpa áudios sem uso há mais de 3 dias.
+              for f in CACHE.glob("*.mp3"):
+                  if time.time() - f.stat().st_mtime > 3 * 86400: f.unlink(missing_ok=True)
+
+              print(f"Voz {voice} ({ENGINE}): {made} gravados agora, {failed} falharam, {len(out_phrases)} falas fixas e {sum(1 for i in items if i.get('audio'))} manchetes com áudio.")
+              if os.environ.get("GITHUB_STEP_SUMMARY"):
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
+                      s.write(f"\n### Voz da ANDRA-18\n\nVoz **{voice}** ({'Azure AI Speech' if ENGINE == 'azure' else 'edge-tts'}): {len(out_phrases)} falas fixas, {sum(1 for i in items if i.get('audio'))} manchetes com áudio, {made} gravados nesta execução, {failed} falhas.\n")
+              return 0
+
+          sys.exit(asyncio.run(main()))
+          SCRIPT
+          python3 /tmp/voz.py
+
+      - name: Guardar áudios gravados
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/cyberwave-voz
+          key: voz-${{ github.run_id }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
