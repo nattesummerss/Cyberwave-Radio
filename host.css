@@ -1,0 +1,72 @@
+/* ===== Cyberwave Radio – Host Virtual ===== */
+:root{
+  --cw-cyan:#00f0ff; --cw-magenta:#ff2bd6; --cw-yellow:#f3e600;
+  --cw-bg:#070a12; --cw-panel:rgba(10,14,28,.78);
+}
+#cw-host{
+  position:relative; width:min(380px,92vw); aspect-ratio:3/4;
+  border:1px solid var(--cw-cyan); background:var(--cw-panel);
+  box-shadow:0 0 18px rgba(0,240,255,.35), inset 0 0 40px rgba(255,43,214,.08);
+  clip-path:polygon(0 0,calc(100% - 22px) 0,100% 22px,100% 100%,22px 100%,0 calc(100% - 22px));
+  overflow:hidden; font-family:"Orbitron","Rajdhani",system-ui,sans-serif; color:#e9faff;
+}
+#cw-host .cw-figure{
+  position:absolute; inset:0; display:flex; align-items:flex-end; justify-content:center;
+}
+#cw-host .cw-figure img{
+  width:100%; height:100%; object-fit:contain; object-position:center bottom;
+  animation:cw-breathe 5s ease-in-out infinite;
+  filter:drop-shadow(0 0 12px rgba(0,240,255,.45));
+}
+#cw-host.is-talking .cw-figure img{ animation:cw-breathe 5s ease-in-out infinite, cw-talk .28s steps(2) infinite; }
+#cw-host .cw-figure canvas.cw-rig{ width:100%; height:100%; object-fit:contain; object-position:center bottom; filter:drop-shadow(0 0 12px rgba(0,240,255,.45)); }
+#cw-host.is-talking .cw-figure canvas.cw-rig{ filter:drop-shadow(0 0 22px rgba(255,43,214,.7)); transition:filter .3s; }
+@keyframes cw-breathe{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-4px) scale(1.012)}}
+@keyframes cw-talk{0%{filter:drop-shadow(0 0 12px rgba(0,240,255,.45))}100%{filter:drop-shadow(0 0 22px rgba(255,43,214,.75))}}
+
+/* scanlines + glitch */
+#cw-host::before{
+  content:""; position:absolute; inset:0; pointer-events:none; z-index:3; mix-blend-mode:overlay;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.06) 0 1px,transparent 1px 3px);
+}
+#cw-host.glitch .cw-figure img, #cw-host.glitch .cw-figure canvas.cw-rig{ animation:cw-glitch .35s steps(3) 1; }
+@keyframes cw-glitch{
+  0%{clip-path:inset(0 0 0 0);transform:translate(0)}
+  33%{clip-path:inset(20% 0 55% 0);transform:translate(-6px) }
+  66%{clip-path:inset(60% 0 10% 0);transform:translate(6px)}
+  100%{clip-path:inset(0 0 0 0);transform:translate(0)}
+}
+
+/* HUD */
+#cw-host .cw-hud{
+  position:absolute; left:0; right:0; bottom:0; z-index:4; padding:12px 14px 14px;
+  background:linear-gradient(180deg,transparent,rgba(7,10,18,.92) 40%);
+}
+#cw-host .cw-name{ font-size:.95rem; letter-spacing:.18em; text-transform:uppercase; color:var(--cw-cyan); }
+#cw-host .cw-role{ font-size:.7rem; letter-spacing:.14em; color:var(--cw-magenta); margin-top:2px; }
+#cw-host .cw-live{
+  position:absolute; top:12px; left:12px; z-index:4; font-size:.68rem; letter-spacing:.2em;
+  padding:4px 8px; border:1px solid var(--cw-magenta); color:var(--cw-magenta);
+}
+#cw-host .cw-live::before{ content:"● "; animation:cw-blink 1s steps(1) infinite; }
+@keyframes cw-blink{50%{opacity:0}}
+
+/* equalizer reativo */
+#cw-host .cw-eq{ position:absolute; top:12px; right:12px; z-index:4; display:flex; gap:3px; align-items:flex-end; height:26px; }
+#cw-host .cw-eq i{ width:4px; height:20%; background:var(--cw-cyan); box-shadow:0 0 6px var(--cw-cyan); transition:height .08s linear; }
+
+/* legenda da fala */
+#cw-host .cw-caption{
+  margin-top:8px; min-height:2.6em; font-family:"Rajdhani",system-ui,sans-serif; font-size:.9rem; line-height:1.3;
+  color:#dff9ff; border-left:2px solid var(--cw-yellow); padding-left:8px;
+}
+#cw-host .cw-caption .cursor{ display:inline-block; width:8px; background:var(--cw-yellow); animation:cw-blink .8s steps(1) infinite; }
+
+/* controles */
+#cw-host .cw-controls{ display:flex; gap:8px; margin-top:10px; }
+#cw-host .cw-controls button{
+  flex:1; background:transparent; color:var(--cw-cyan); border:1px solid var(--cw-cyan);
+  padding:6px 8px; font:inherit; font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; cursor:pointer;
+}
+#cw-host .cw-controls button:hover{ background:rgba(0,240,255,.12); box-shadow:0 0 10px rgba(0,240,255,.5); }
+#cw-host .cw-controls button:focus-visible{ outline:2px solid var(--cw-yellow); outline-offset:2px; }
