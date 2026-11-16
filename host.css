@@ -31,17 +31,3 @@
 #cw-host .cw-controls button{ flex:1 1 30%; background:transparent; color:var(--cw-cyan); border:1px solid var(--cw-cyan); padding:6px 6px; font:inherit; font-size:.62rem; letter-spacing:.1em; text-transform:uppercase; cursor:pointer; }
 #cw-host .cw-controls button:hover{ background:rgba(0,240,255,.12); box-shadow:0 0 10px rgba(0,240,255,.5); }
 #cw-host .cw-controls button:focus-visible{ outline:2px solid var(--cw-yellow); outline-offset:2px; }
-
-/* ===== Encaixe na página da Cyberwave Radio (acrescentado na integração) ===== */
-/* Guarda da apresentadora enquanto o painel do jornal não está na tela (painel oculto). */
-#cw-host-guarda{ display:none; }
-/* No painel do jornal: a apresentadora ocupa a coluna da esquerda no computador e o topo no celular. */
-.cw-host-slot #cw-host{ width:100%; max-width:380px; margin:0 auto; }
-#cw-host .cw-caption:empty::before{ content:"Toque em Apresentar ou Notícias."; opacity:.55; }
-@media (max-width: 420px){
-  #cw-host .cw-controls button{ font-size:.58rem; padding:7px 4px; min-height:32px; }
-}
-@media (prefers-reduced-motion: reduce){
-  #cw-host .cw-live::before, #cw-host .cw-caption .cursor{ animation:none; }
-  #cw-host.glitch .cw-figure canvas.cw-rig{ animation:none; }
-}

@@ -1,4 +1,4 @@
-/* ===== Cyberwave Radio – ANDRA-18 Rig 2.5D v5 "Human Motion" =====
+/* ===== Cyberwave Radio – ANDRA-18 Rig 2.5D v5.1 "Human Motion" — pose A aberta =====
  * Princípios de animação aplicados em tempo real (canvas, sem libs):
  *  • Física de molas (massa/amortecimento) em todas as articulações → peso, overshoot e follow-through
  *  • Ruído orgânico contínuo (soma de senos incomensuráveis) em vez de poses aleatórias → nunca "robótico"
@@ -19,19 +19,21 @@
 
   // ---------- Regiões (px da imagem 1024x1536) ----------
   const R = {
-    head:  { x: 280, y: 0, w: 480, h: 470, pivotX: 518, pivotY: 440 },
-    jaw:   { x: 440, y: 300, w: 160, h: 100 }, lip: { x: 518, y: 340 },
-    eyeL:  { x: 425, y: 228, w: 67, h: 40 }, eyeR: { x: 543, y: 228, w: 69, h: 40 },
-    browL: { x: 420, y: 195, w: 80, h: 35 }, browR: { x: 540, y: 195, w: 80, h: 35 },
-    hairL: { poly: [[285,40],[400,40],[415,200],[430,330],[445,470],[290,480]], pivot: [350, 60] },
-    hairR: { poly: [[590,300],[650,290],[660,470],[590,470]], pivot: [620, 290] },
+    head:  { x: 280, y: 0, w: 480, h: 470, pivotX: 525, pivotY: 440 },
+    jaw:   { x: 440, y: 300, w: 170, h: 100 }, lip: { x: 526, y: 340 },
+    eyeL:  { x: 432, y: 228, w: 68, h: 40 }, eyeR: { x: 548, y: 222, w: 70, h: 40 },
+    browL: { x: 425, y: 195, w: 80, h: 33 }, browR: { x: 545, y: 190, w: 80, h: 32 },
+    hairL: { poly: [[285,30],[400,30],[420,200],[435,330],[450,470],[290,480]], pivot: [350, 50] },
+    hairR: { poly: [[600,300],[660,290],[670,470],[600,470]], pivot: [630, 290] },
     bodyPivot: { x: 512, y: 1500 }, chest: { x: 300, y: 480, w: 424, h: 500 },
-    upL: { poly: [[185,515],[305,525],[300,760],[260,920],[150,930],[120,760]], pivot: [245, 575] },
-    loL: { poly: [[135,890],[280,890],[300,1260],[0,1260],[0,1050]], pivot: [150, 920] },
-    hdL: { poly: [[0,1230],[215,1230],[260,1536],[0,1536]], pivot: [110, 1250] },
-    upR: { poly: [[735,515],[850,525],[895,760],[880,930],[770,920],[730,760]], pivot: [790, 575] },
-    loR: { poly: [[745,890],[900,890],[1024,1050],[1024,1260],[740,1260]], pivot: [880, 920] },
-    hdR: { poly: [[790,1230],[1024,1230],[1024,1536],[760,1536]], pivot: [910, 1250] },
+    // braço esquerdo da tela: ombro → antebraço → mão (pivôs nas articulações)
+    upL: { poly: [[180,515],[305,520],[305,700],[262,905],[148,905],[158,700]], pivot: [240, 570] },
+    loL: { poly: [[55,875],[270,875],[262,1185],[45,1185]], pivot: [170, 900] },
+    hdL: { poly: [[0,1145],[245,1145],[225,1420],[0,1420]], pivot: [120, 1170] },
+    // braço direito da tela
+    upR: { poly: [[725,515],[850,520],[882,700],[882,905],[768,905],[725,700]], pivot: [790, 570] },
+    loR: { poly: [[765,875],[985,875],[1005,1185],[775,1185]], pivot: [870, 900] },
+    hdR: { poly: [[795,1145],[1024,1145],[1024,1420],[815,1420]], pivot: [920, 1170] },
   };
 
   // ---------- Config ----------
@@ -40,7 +42,7 @@
     headRotDeg: 7, headShiftX: 34, headShiftY: 18, headTiltScale: .06,
     bodySwayDeg: 3, bodyShiftX: 26, weightShiftX: 22, breathPx: 7,
     nodPx: 18, browRaisePx: 11,
-    upArmDeg: 13, loArmDeg: 22, handDeg: 16, armBeatDeg: 5, layerOverscan: 1.03,
+    upArmDeg: 16, loArmDeg: 26, handDeg: 20, armBeatDeg: 7, layerOverscan: 1.03,
     syllableHz: 7.5, gestureEveryMs: [2600, 6500],
     followCursor: true, followStrength: 1,
     // molas: [stiffness, damping] — menos damping = mais balanço
@@ -176,8 +178,6 @@
   // ---------- Loop ----------
   let last = performance.now();
   function frame(now) {
-    // Integração: não desenha enquanto a apresentadora está oculta ou fora da página (economiza bateria).
-    if (!root.isConnected || root.offsetParent === null) { last = now; requestAnimationFrame(frame); return; }
     const dtMs = Math.min(50, now - last); last = now; S.t += dtMs; const dt = dtMs / 1000, T = S.t / 1000, A = CFG.amp;
     for (const k in S.g) S.g[k] = 0;                       // offsets de gesto são recalculados por frame
     S.shake *= Math.exp(-dt * 6);
@@ -248,14 +248,14 @@
     // ---------- render ----------
     ctx.clearRect(0, 0, cv.width, cv.height);
     ctx.save(); ctx.translate(R.bodyPivot.x + bX, R.bodyPivot.y + bY + breath); ctx.rotate(bRot * Math.PI / 180); ctx.translate(-R.bodyPivot.x, -R.bodyPivot.y);
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(L.body, 0, 0);
     // peito sobe com a respiração (escala vertical sutil ancorada na cintura)
     ctx.save(); ctx.translate(R.chest.x + R.chest.w / 2, R.chest.y + R.chest.h); ctx.scale(1 + breathPh * .004, 1 + breathPh * .012); ctx.translate(-(R.chest.x + R.chest.w / 2), -(R.chest.y + R.chest.h)); ctx.drawImage(L.chest.c, R.chest.x, R.chest.y); ctx.restore();
 
     // braços (ombros sobem com a respiração)
     const shoulderLift = -breathPh * 2.5;
-    drawArm(L.upL, L.loL, L.hdL, -uL, -lL, -hdL, shoulderLift);
-    drawArm(L.upR, L.loR, L.hdR, uR, lR, hdR, shoulderLift);
+    drawArm(L.upL, L.loL, L.hdL, uL, lL, hdL, shoulderLift);
+    drawArm(L.upR, L.loR, L.hdR, -uR, -lR, -hdR, shoulderLift);
 
     // cabeça
     const H = R.head;
@@ -297,6 +297,12 @@
     cutRect('head', R.head, 'bottom'); cutRect('jaw', R.jaw); cutRect('eyeL', R.eyeL); cutRect('eyeR', R.eyeR); cutRect('browL', R.browL); cutRect('browR', R.browR); cutRect('chest', R.chest);
     cutPoly('hairL', R.hairL, 10); cutPoly('hairR', R.hairR, 10);
     cutPoly('upL', R.upL, 14); cutPoly('loL', R.loL, 16); cutPoly('hdL', R.hdL, 14); cutPoly('upR', R.upR, 14); cutPoly('loR', R.loR, 16); cutPoly('hdR', R.hdR, 14);
+    // corpo base = imagem sem as regiões que viram camadas móveis
+    const body = document.createElement('canvas'); body.width = cv.width; body.height = cv.height; const bx = body.getContext('2d');
+    bx.drawImage(img, 0, 0); bx.globalCompositeOperation = 'destination-out';
+    for (const n of ['upL', 'loL', 'hdL', 'upR', 'loR', 'hdR']) { const Lr = L[n], [px, py] = Lr.pivot; bx.save(); bx.translate(px, py); bx.scale(1.06, 1.06); bx.translate(-px, -py); bx.drawImage(Lr.c, Lr.x, Lr.y); bx.restore(); }
+    bx.globalAlpha = .85; bx.drawImage(L.head.c, L.head.x, L.head.y);   // cabeça: remoção parcial (mantém base do pescoço)
+    L.body = body;
     requestAnimationFrame(frame);
   }
   if (img.complete && img.naturalWidth) init(); else img.addEventListener('load', init);
