@@ -270,13 +270,24 @@ jobs:
               if it.get("lang") == "en": return "Na " + it["sourceName"] + ", em inglês"
               return "Segundo a " + it["sourceName"]
 
+          LEX = []
+          def say(text):
+              # Pronúncia: troca termos ingleses pela grafia que a voz pt-BR lê certo (src/lib/andra-lexicon.ts).
+              for rx, rep in LEX: text = rx.sub(rep, text)
+              return text
+
           def file_for(voice, text):
-              h = hashlib.sha1(f"{ENGINE}|{voice}|{RATE}|{text}".encode()).hexdigest()[:20]
+              h = hashlib.sha1(f"{ENGINE}|{voice}|{RATE}|{say(text)}".encode()).hexdigest()[:20]
               return h + ".mp3"
 
           def azure(text, voice, path):
-              ssml = (f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='pt-BR'>"
-                      f"<voice name='{voice}'><prosody rate='{RATE}'>{html.escape(text)}</prosody></voice></speak>")
+              body = html.escape(say(text))
+              # Manchete em inglês: vozes "Multilingual" leem o trecho original com pronúncia americana.
+              if "Multilingual" in voice and ", em inglês: " in text:
+                  head, tail = text.split(", em inglês: ", 1)
+                  body = html.escape(say(head) + ", em inglês: ") + "<lang xml:lang='en-US'>" + html.escape(tail) + "</lang>"
+              ssml = (f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='pt-BR'>"
+                      f"<voice name='{voice}'><prosody rate='{RATE}'>{body}</prosody></voice></speak>")
               req = urllib.request.Request(
                   f"https://{REGION}.tts.speech.microsoft.com/cognitiveservices/v1", data=ssml.encode("utf-8"), method="POST",
                   headers={"Ocp-Apim-Subscription-Key": KEY, "Content-Type": "application/ssml+xml",
@@ -289,7 +300,7 @@ jobs:
           async def edge(text, voice, path):
               import edge_tts
               tmp = path.with_suffix(".tmp")
-              await asyncio.wait_for(edge_tts.Communicate(text, voice, rate=RATE).save(str(tmp)), 60)
+              await asyncio.wait_for(edge_tts.Communicate(say(text), voice, rate=RATE).save(str(tmp)), 60)
               if tmp.stat().st_size < 500: raise RuntimeError("áudio vazio")
               tmp.replace(path)
 
@@ -300,6 +311,12 @@ jobs:
           async def main():
               m = re.search(r'<script type="application/json" id="andra-frases">(.*?)</script>', Path("index.html").read_text(encoding="utf-8"), re.S)
               phrases = json.loads(m.group(1)) if m else {}
+              lx = re.search(r'<script type="application/json" id="andra-lexico">(.*?)</script>', Path("index.html").read_text(encoding="utf-8"), re.S)
+              if lx:
+                  for p, rep in json.loads(lx.group(1)):
+                      try: LEX.append((re.compile(p, re.I), rep))
+                      except re.error as e: print(f"termo de pronúncia ignorado ({p}): {e}")
+              print(f"Vocabulário de pronúncia: {len(LEX)} termos")
               if not m: print("::warning title=Voz::index.html sem o bloco andra-frases (index.html antigo?)")
               news_path = Path("noticias.json")
               news = json.loads(news_path.read_text(encoding="utf-8")) if news_path.exists() else {"items": []}
@@ -462,6 +479,7 @@ jobs:
                   name = fold(r.get("name", ""))
                   if any(w not in name for w in lk.get("match", [])): continue
                   if lk.get("matchAny") and not any(fold(w) in name for w in lk["matchAny"]): continue
+                  if any(fold(w) in name for w in lk.get("exclude", [])): continue
                   u = (r.get("url_resolved") or r.get("url") or "").strip()
                   if u.startswith("https://") and u not in out: out.append(u)
               return out[:4]
