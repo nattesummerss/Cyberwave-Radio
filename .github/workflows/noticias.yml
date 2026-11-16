@@ -549,6 +549,53 @@ jobs:
           path: ~/.cache/cyberwave-radios
           key: radios-${{ github.run_id }}
 
+      # Músicas sob demanda: gera musica.json com as chaves das fontes que precisam de cadastro.
+      # Cadastre em Settings → Secrets and variables → Actions (todas opcionais):
+      #   JAMENDO_CLIENT_ID      (variável ou segredo) – chave gratuita em https://devportal.jamendo.com
+      #   YOUTUBE_API_KEY        (variável ou segredo) – chave da YouTube Data API v3 (Google Cloud), restrita ao site
+      #   APPLE_TEAM_ID, APPLE_KEY_ID e APPLE_MUSIC_PRIVATE_KEY (segredos) – chave MusicKit do Apple Developer;
+      #     aqui é gerado o token de desenvolvedor (válido por 60 dias, refeito a cada execução e limitado ao seu site).
+      # Essas chaves ficam visíveis no site (são públicas por natureza); a chave privada da Apple nunca sai do GitHub.
+      - name: Configurar as fontes de músicas
+        continue-on-error: true
+        env:
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID || vars.JAMENDO_CLIENT_ID }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY || vars.YOUTUBE_API_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_MUSIC_PRIVATE_KEY: ${{ secrets.APPLE_MUSIC_PRIVATE_KEY }}
+          APPLE_MUSIC_STOREFRONT: ${{ vars.APPLE_MUSIC_STOREFRONT }}
+        run: |
+          if [ -n "$APPLE_MUSIC_PRIVATE_KEY" ]; then pip install --quiet --disable-pip-version-check "pyjwt[crypto]>=2.8,<3"; fi
+          python3 - <<'PY'
+          import json, os, time
+          from pathlib import Path
+          cfg = {}
+          p = Path("musica.json")
+          if p.exists():
+              try: cfg = json.loads(p.read_text(encoding="utf-8"))
+              except Exception: print("::warning title=Músicas::musica.json inválido; será refeito")
+          env = lambda k: os.environ.get(k, "").strip()
+          if env("JAMENDO_CLIENT_ID"): cfg["jamendoClientId"] = env("JAMENDO_CLIENT_ID")
+          if env("YOUTUBE_API_KEY"): cfg["youtubeApiKey"] = env("YOUTUBE_API_KEY")
+          cfg["appleMusicStorefront"] = env("APPLE_MUSIC_STOREFRONT") or cfg.get("appleMusicStorefront") or "br"
+          status = []
+          if env("APPLE_MUSIC_PRIVATE_KEY") and env("APPLE_TEAM_ID") and env("APPLE_KEY_ID"):
+              import jwt
+              now = int(time.time())
+              owner = env("GITHUB_REPOSITORY_OWNER").lower()
+              token = jwt.encode({"iss": env("APPLE_TEAM_ID"), "iat": now, "exp": now + 60 * 86400, "origin": [f"https://{owner}.github.io"]},
+                                 env("APPLE_MUSIC_PRIVATE_KEY").replace("\\n", "\n"), algorithm="ES256", headers={"kid": env("APPLE_KEY_ID")})
+              cfg["appleMusicDeveloperToken"] = token
+          p.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+          for k, name in [("jamendoClientId", "Jamendo"), ("youtubeApiKey", "YouTube (busca)"), ("appleMusicDeveloperToken", "Apple Music")]:
+              status.append(f"| {name} | {'configurado' if cfg.get(k) else 'sem chave'} |")
+          print("\n".join(status))
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
+                  s.write("\n### Fontes de músicas\n\n| Fonte | Situação |\n|---|---|\n| Audius | sem cadastro |\n| Internet Archive | sem cadastro |\n" + "\n".join(status) + "\n")
+          PY
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .
