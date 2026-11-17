@@ -549,51 +549,135 @@ jobs:
           path: ~/.cache/cyberwave-radios
           key: radios-${{ github.run_id }}
 
-      # Músicas sob demanda: gera musica.json com as chaves das fontes que precisam de cadastro.
-      # Cadastre em Settings → Secrets and variables → Actions (todas opcionais):
-      #   JAMENDO_CLIENT_ID      (variável ou segredo) – chave gratuita em https://devportal.jamendo.com
-      #   YOUTUBE_API_KEY        (variável ou segredo) – chave da YouTube Data API v3 (Google Cloud), restrita ao site
-      #   APPLE_TEAM_ID, APPLE_KEY_ID e APPLE_MUSIC_PRIVATE_KEY (segredos) – chave MusicKit do Apple Developer;
-      #     aqui é gerado o token de desenvolvedor (válido por 60 dias, refeito a cada execução e limitado ao seu site).
-      # Essas chaves ficam visíveis no site (são públicas por natureza); a chave privada da Apple nunca sai do GitHub.
-      - name: Configurar as fontes de músicas
+      # Músicas completas SEM cadastro: o próprio GitHub procura no YouTube Music / YouTube / Last.fm o vídeo
+      # certo das músicas mais ouvidas (paradas do Apple Music e do Deezer, artistas das abas da rádio,
+      # gêneros do Deezer e o arquivo musicas/pedidos.txt) e publica musicas/indice.json junto com o site.
+      # O site consulta esse arquivo primeiro, então funciona até em redes que bloqueiam Deezer, Last.fm,
+      # Wikidata, Invidious e Vercel (computador de empresa/AVD), desde que o YouTube abra.
+      # Cada execução trabalha alguns minutos (variável MUSICAS_MINUTOS, padrão 4; 0 desliga a busca) e continua
+      # de onde parou na seguinte. O resumo da execução mostra quantas músicas já estão prontas.
+      - name: Restaurar o índice de músicas
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/cyberwave-musicas
+          key: musicas-${{ github.run_id }}
+          restore-keys: musicas-
+
+      - name: Montar o índice de músicas completas
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+          MUSICAS_MINUTOS: ${{ vars.MUSICAS_MINUTOS }}
+          MUSICAS_POR_ARTISTA: ${{ vars.MUSICAS_POR_ARTISTA }}
+        run: |
+          if [ ! -f ferramentas/indice-musicas.mjs ]; then
+            echo "::warning title=Músicas::ferramentas/indice-musicas.mjs não está no repositório (envie a pasta ferramentas do pacote do site)"
+            exit 0
+          fi
+          node ferramentas/indice-musicas.mjs
+
+      - name: Guardar o índice de músicas
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/cyberwave-musicas
+          key: musicas-${{ github.run_id }}
+
+      # Extras OPCIONAIS para músicas fora do índice (o site funciona sem eles):
+      #   MUSICA_PROXY_URL (variável) – endereço do buscador próprio na Vercel, ex.: https://<projeto>.vercel.app/api/musica
+      #   CLOUDFLARE_API_TOKEN e CLOUDFLARE_ACCOUNT_ID (segredos) – publica o mesmo buscador na Cloudflare
+      #   YOUTUBE_API_KEY (variável ou segredo) – chave da YouTube Data API v3, restrita ao site (fica visível no site)
+      - name: Publicar o buscador de músicas (Cloudflare Worker, opcional)
+        id: worker
         continue-on-error: true
         env:
-          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID || vars.JAMENDO_CLIENT_ID }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY || vars.YOUTUBE_API_KEY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
-          APPLE_MUSIC_PRIVATE_KEY: ${{ secrets.APPLE_MUSIC_PRIVATE_KEY }}
-          APPLE_MUSIC_STOREFRONT: ${{ vars.APPLE_MUSIC_STOREFRONT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -n "$APPLE_MUSIC_PRIVATE_KEY" ]; then pip install --quiet --disable-pip-version-check "pyjwt[crypto]>=2.8,<3"; fi
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Sem CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID: pulando (use a Vercel ou a variável MUSICA_PROXY_URL)."
+            exit 0
+          fi
+          if [ ! -f worker/musica-worker.js ]; then echo "::warning title=Músicas::worker/musica-worker.js não está no repositório"; exit 0; fi
+          ORIGIN="https://${GITHUB_REPOSITORY_OWNER,,}.github.io"
+          set +e
+          npx --yes wrangler@3 deploy worker/musica-worker.js --name cyberwave-musica --compatibility-date 2024-11-01 --var "ORIGENS:${ORIGIN}" > wrangler.log 2>&1
+          CODE=$?
+          set -e
+          sed -E 's/[A-Za-z0-9_-]{30,}/***/g' wrangler.log
+          URL=$(grep -oE 'https://cyberwave-musica\.[a-z0-9-]+\.workers\.dev' wrangler.log | head -1)
+          if [ -n "$URL" ]; then echo "url=$URL" >> "$GITHUB_OUTPUT"; echo "Buscador publicado em $URL"; fi
+          if [ $CODE -ne 0 ] || [ -z "$URL" ]; then
+            echo "falhou=1" >> "$GITHUB_OUTPUT"
+            if grep -qi "workers.dev subdomain" wrangler.log; then
+              echo "::warning title=Músicas::Crie seu subdomínio workers.dev: entre uma vez em Workers & Pages no painel da Cloudflare e rode de novo."
+            else
+              echo "::warning title=Músicas::A publicação na Cloudflare falhou; veja o log deste passo."
+            fi
+          fi
+          rm -f wrangler.log
+
+      - name: Configurar e testar as fontes de músicas
+        continue-on-error: true
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY || vars.YOUTUBE_API_KEY }}
+          MUSICA_PROXY_URL: ${{ vars.MUSICA_PROXY_URL || steps.worker.outputs.url }}
+          CLOUDFLARE_FALHOU: ${{ steps.worker.outputs.falhou }}
+        run: |
           python3 - <<'PY'
-          import json, os, time
+          import json, os, time, urllib.parse, urllib.request
           from pathlib import Path
-          cfg = {}
           p = Path("musica.json")
+          cfg = {}
           if p.exists():
               try: cfg = json.loads(p.read_text(encoding="utf-8"))
               except Exception: print("::warning title=Músicas::musica.json inválido; será refeito")
+          for k in ("jamendoClientId", "appleMusicDeveloperToken", "appleMusicStorefront"): cfg.pop(k, None)
           env = lambda k: os.environ.get(k, "").strip()
-          if env("JAMENDO_CLIENT_ID"): cfg["jamendoClientId"] = env("JAMENDO_CLIENT_ID")
           if env("YOUTUBE_API_KEY"): cfg["youtubeApiKey"] = env("YOUTUBE_API_KEY")
-          cfg["appleMusicStorefront"] = env("APPLE_MUSIC_STOREFRONT") or cfg.get("appleMusicStorefront") or "br"
-          status = []
-          if env("APPLE_MUSIC_PRIVATE_KEY") and env("APPLE_TEAM_ID") and env("APPLE_KEY_ID"):
-              import jwt
-              now = int(time.time())
-              owner = env("GITHUB_REPOSITORY_OWNER").lower()
-              token = jwt.encode({"iss": env("APPLE_TEAM_ID"), "iat": now, "exp": now + 60 * 86400, "origin": [f"https://{owner}.github.io"]},
-                                 env("APPLE_MUSIC_PRIVATE_KEY").replace("\\n", "\n"), algorithm="ES256", headers={"kid": env("APPLE_KEY_ID")})
-              cfg["appleMusicDeveloperToken"] = token
+          url = env("MUSICA_PROXY_URL").rstrip("/")
+          if url:
+              u = urllib.parse.urlparse(url)
+              if u.hostname and u.hostname.endswith(".vercel.app") and u.path in ("", "/"):
+                  url = f"{u.scheme}://{u.netloc}/api/musica"
+              cfg["musicaProxyUrl"] = url
           p.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
-          for k, name in [("jamendoClientId", "Jamendo"), ("youtubeApiKey", "YouTube (busca)"), ("appleMusicDeveloperToken", "Apple Music")]:
-              status.append(f"| {name} | {'configurado' if cfg.get(k) else 'sem chave'} |")
-          print("\n".join(status))
+
+          def teste(params):
+              base = cfg["musicaProxyUrl"]
+              full = base + ("&" if "?" in base else "?") + urllib.parse.urlencode(params)
+              t0 = time.time()
+              req = urllib.request.Request(full, headers={"User-Agent": "CyberwaveRadio-Actions/1.0"})
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  return json.loads(r.read().decode("utf-8")), round((time.time() - t0) * 1000)
+
+          linhas = []
+          if cfg.get("musicaProxyUrl"):
+              try:
+                  saude, ms = teste({"op": "saude"})
+                  linhas.append(f"| Buscador próprio | responde ({saude.get('versao', '?')}, {ms} ms) — {cfg['musicaProxyUrl']} |")
+                  try:
+                      hits, ms = teste({"op": "buscar", "q": "Linkin Park Numb"})
+                      linhas.append(f"| Busca no YouTube pelo buscador | {len(hits)} vídeos ({ms} ms) |")
+                  except Exception as e:
+                      linhas.append(f"| Busca no YouTube pelo buscador | FALHOU: {str(e)[:120]} |")
+                  try:
+                      lf, ms = teste({"op": "lastfm", "artist": "Linkin Park", "title": "Numb"})
+                      linhas.append(f"| Last.fm pelo buscador | {len(lf.get('ids', []))} vídeo(s) ({ms} ms) |")
+                  except Exception as e:
+                      linhas.append(f"| Last.fm pelo buscador | FALHOU: {str(e)[:120]} |")
+              except Exception as e:
+                  linhas.append(f"| Buscador próprio | NÃO RESPONDE ({str(e)[:120]}) — confira o endereço em MUSICA_PROXY_URL |")
+          else:
+              extra = " (a publicação na Cloudflare falhou — veja o passo anterior)" if env("CLOUDFLARE_FALHOU") else ""
+              linhas.append(f"| Buscador próprio (opcional) | não configurado{extra} — o site usa o índice de músicas completas (tabela acima) |")
+          linhas.append(f"| YouTube Data API | {'configurada' if cfg.get('youtubeApiKey') else 'sem chave (opcional)'} |")
+          print("\n".join(linhas))
           if os.environ.get("GITHUB_STEP_SUMMARY"):
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
-                  s.write("\n### Fontes de músicas\n\n| Fonte | Situação |\n|---|---|\n| Audius | sem cadastro |\n| Internet Archive | sem cadastro |\n" + "\n".join(status) + "\n")
+                  s.write("\n### Fontes de músicas\n\n| Fonte | Situação |\n|---|---|\n| Catálogo iTunes/Deezer | sem cadastro |\n| Internet Archive | sem cadastro |\n" + "\n".join(linhas) + "\n\nNo site, abra **Músicas sob demanda → Diagnóstico das fontes** para ver o que funciona no seu aparelho.\n")
           PY
 
       - uses: actions/upload-pages-artifact@v3
