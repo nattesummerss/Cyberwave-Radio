@@ -7,10 +7,11 @@
 # Uma por linha. Linhas que começam com # são ignoradas. Formatos aceitos:
 #
 #   Artista - Música
-#   Artista - Música | https://www.youtube.com/watch?v=XXXXXXXXXXX     (fixa este vídeo para a música)
+   Bring me the Horizon - Doomed - L.I.V.E. In São Paulo (Live Immersive Virtual Experiment) | https://www.youtube.com/watch?v=23-8TLCyuEk     (fixa este vídeo para a música)
 #   https://www.deezer.com/br/playlist/1234567890                       (todas as músicas da playlist)
 #   https://www.deezer.com/br/album/1234567                             (todas as músicas do álbum)
-#   https://www.deezer.com/br/artist/1234                               (as 25 mais ouvidas do artista)
+    https://www.deezer.com/br/artist/11025166   (as 25 mais ouvidas do artista)
+    https://www.deezer.com/br/artist/12874
 #   https://www.deezer.com/br/track/123456789                           (uma música)
 #
 # Exemplos (apague o # do começo para usar):
