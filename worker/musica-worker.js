@@ -1,4 +1,4 @@
-// Cyberwave Radio — buscador de músicas (Cloudflare Worker). Gerado a partir de src/worker/musica-worker.ts.
+// Cyberwave Radio — buscador de músicas (Cloudflare Worker). Gerado a partir de src/worker/.
 
 // src/lib/yt-parse.ts
 var o = (v) => v && typeof v === "object" ? v : {};
@@ -96,11 +96,32 @@ function ytInitialDataFromHtml(html) {
   }
   return null;
 }
+function lastfmTrackUrl(artist, title) {
+  const part = (s) => encodeURIComponent(s.trim()).replace(/%20/g, "+");
+  return `https://www.last.fm/music/${part(artist)}/_/${part(title)}`;
+}
+var unescapeHtml = (s) => s?.replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+function lastfmVideos(html) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const m of html.matchAll(/<[a-z]+\b[^>]*\bdata-youtube-id="([\w-]{11})"[^>]*>/gi)) {
+    const tag = m[0];
+    const attr = (n) => unescapeHtml(tag.match(new RegExp(`\\b${n}="([^"]*)"`))?.[1]);
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push({ id: m[1], track: attr("data-track-name"), artist: attr("data-artist-name") });
+  }
+  return out;
+}
+function clientVersion(prefix, suffix) {
+  const d = new Date(Date.now() - 5 * 864e5);
+  return `${prefix}.${d.toISOString().slice(0, 10).replace(/-/g, "")}.${suffix}`;
+}
 var INNERTUBE = {
   music: {
     url: "https://music.youtube.com/youtubei/v1/search?prettyPrint=false",
-    body: (q, clientVersion = "1.20251110.01.00") => ({
-      context: { client: { clientName: "WEB_REMIX", clientVersion, hl: "pt", gl: "BR" } },
+    body: (q, version = clientVersion("1", "01.00")) => ({
+      context: { client: { clientName: "WEB_REMIX", clientVersion: version, hl: "pt", gl: "BR" } },
       query: q,
       params: "EgWKAQIIAWoMEA4QChADEAQQCRAF"
       // filtro "Músicas" (o mesmo do ytmusicapi)
@@ -108,88 +129,142 @@ var INNERTUBE = {
   },
   web: {
     url: "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
-    body: (q, clientVersion = "2.20251110.00.00") => ({
-      context: { client: { clientName: "WEB", clientVersion, hl: "pt", gl: "BR" } },
+    body: (q, version = clientVersion("2", "00.00")) => ({
+      context: { client: { clientName: "WEB", clientVersion: version, hl: "pt", gl: "BR" } },
       query: q,
       params: "EgIQAQ=="
       // só vídeos
     })
   },
-  html: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D&hl=pt-BR&gl=BR`
+  html: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&sp=EgIQAQ%253D%253D&hl=pt-BR&gl=BR&ucbcb=1`
 };
 
-// src/worker/musica-worker.ts
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+// src/worker/musica-core.ts
+var VERSAO = "v20";
+var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
+var COOKIE = "SOCS=CAI; CONSENT=YES+";
 function allowOrigin(origin, env) {
   if (!origin) return "*";
-  const list = (env.ORIGENS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const list = (env.ORIGENS ?? "").split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean);
   if (list.length) return list.includes(origin) ? origin : null;
-  return /^https:\/\/[\w-]+\.github\.io$/.test(origin) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null;
+  return /^https:\/\/[\w.-]+\.(github\.io|vercel\.app|workers\.dev|pages\.dev)$/.test(origin) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null;
 }
-async function innertube(kind, q) {
+async function timed(url, init, ms = 8e3) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function innertube(kind, q, ms = 5e3) {
   const cfg = INNERTUBE[kind];
-  const res = await fetch(cfg.url, {
+  const res = await timed(cfg.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "user-agent": UA,
       origin: kind === "music" ? "https://music.youtube.com" : "https://www.youtube.com",
-      cookie: "SOCS=CAI; CONSENT=YES+"
+      cookie: COOKIE
     },
     body: JSON.stringify(cfg.body(q))
-  });
+  }, ms);
   if (!res.ok) throw new Error(`${kind} ${res.status}`);
   return parseYoutubeSearch(await res.json(), 12);
 }
-async function htmlSearch(q) {
-  const res = await fetch(INNERTUBE.html(q), { headers: { "user-agent": UA, "accept-language": "pt-BR,pt;q=0.9", cookie: "SOCS=CAI; CONSENT=YES+" } });
+async function htmlSearch(q, ms = 5e3) {
+  const res = await timed(INNERTUBE.html(q), { headers: { "user-agent": UA, "accept-language": "pt-BR,pt;q=0.9", cookie: COOKIE } }, ms);
   if (!res.ok) throw new Error(`html ${res.status}`);
   return parseYoutubeSearch(ytInitialDataFromHtml(await res.text()), 12);
 }
-async function buscar(q) {
+async function apiSearch(q, key, ms = 4e3) {
+  const p = new URLSearchParams({ part: "snippet", type: "video", videoEmbeddable: "true", maxResults: "10", q, key, regionCode: "BR" });
+  const res = await timed(`https://www.googleapis.com/youtube/v3/search?${p}`, {}, ms);
+  if (!res.ok) throw new Error(`api ${res.status}`);
+  const data = await res.json();
+  return (data.items ?? []).filter((i) => i.id?.videoId).map((i) => ({ id: i.id.videoId, title: i.snippet?.title ?? "", channel: i.snippet?.channelTitle ?? "" }));
+}
+var DEADLINE = 8500;
+async function buscar(q, env) {
+  const t0 = Date.now();
+  const left = () => DEADLINE - (Date.now() - t0);
   const [music, web] = await Promise.allSettled([innertube("music", q), innertube("web", q)]);
   let out = [...music.status === "fulfilled" ? music.value.slice(0, 6) : [], ...web.status === "fulfilled" ? web.value : []];
-  if (out.length < 3) out = [...out, ...await htmlSearch(q).catch(() => [])];
+  if (out.length < 3 && left() > 1500) out = [...out, ...await htmlSearch(q, left() - 500).catch(() => [])];
+  if (!out.length && env.YOUTUBE_API_KEY && left() > 1e3) out = await apiSearch(q, env.YOUTUBE_API_KEY, left() - 300).catch(() => []);
   const seen = /* @__PURE__ */ new Set();
   return out.filter((h) => !seen.has(h.id) && seen.add(h.id)).slice(0, 15);
 }
+var simple = (s) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+async function lastfm(artist, title) {
+  const res = await timed(lastfmTrackUrl(artist, title), { headers: { "user-agent": UA, "accept-language": "pt-BR,pt;q=0.9,en;q=0.8" } }, 7e3);
+  if (!res.ok) throw new Error(`lastfm ${res.status}`);
+  const vids = lastfmVideos(await res.text());
+  const exact = vids.filter((v) => !v.track || simple(v.track) === simple(title));
+  return (exact.length ? exact : vids.slice(0, 1)).map((v) => v.id).slice(0, 3);
+}
+var json = (data, status = 200, maxAge = 0) => ({ status, body: JSON.stringify(data), maxAge, contentType: "application/json; charset=utf-8" });
+async function handle(url, env) {
+  const path = url.pathname.replace(/\/+$/, "");
+  const op = url.searchParams.get("op") ?? (path.endsWith("/buscar") ? "buscar" : path.endsWith("/saude") ? "saude" : path.includes("/deezer/") ? "deezer" : "");
+  if (op === "saude") return json({ ok: true, versao: VERSAO });
+  if (op === "buscar") {
+    const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
+    if (!q) return json({ erro: "faltou q" }, 400);
+    try {
+      const hits = await buscar(q, env);
+      return json(hits, hits.length ? 200 : 502, hits.length ? 21600 : 0);
+    } catch (e) {
+      return json({ erro: String(e) }, 502);
+    }
+  }
+  if (op === "lastfm") {
+    const artist = (url.searchParams.get("artist") ?? "").trim().slice(0, 120);
+    const title = (url.searchParams.get("title") ?? "").trim().slice(0, 160);
+    if (!artist || !title) return json({ erro: "faltou artist/title" }, 400);
+    try {
+      const ids = await lastfm(artist, title);
+      return json({ ids }, 200, ids.length ? 86400 : 3600);
+    } catch (e) {
+      return json({ erro: String(e) }, 502);
+    }
+  }
+  if (op === "deezer") {
+    const raw = url.searchParams.get("path") ?? path.slice(path.indexOf("/deezer") + "/deezer".length) + url.search;
+    const target = new URL(raw.startsWith("/") ? raw : `/${raw}`, "https://api.deezer.com");
+    target.searchParams.delete("op");
+    target.searchParams.delete("path");
+    if (target.hostname !== "api.deezer.com" || !/^\/(search|track|album|playlist|artist|chart)(\/|$)/.test(target.pathname)) return json({ erro: "caminho n\xE3o permitido" }, 400);
+    const up = await timed(target.toString(), { headers: { "user-agent": UA } });
+    return { status: up.status, body: await up.text(), maxAge: up.ok ? 21600 : 0, contentType: "application/json; charset=utf-8" };
+  }
+  return json({ erro: "use ?op=buscar&q=..." }, 404);
+}
+
+// src/worker/musica-worker.ts
 var musica_worker_default = {
   async fetch(req, env) {
     const url = new URL(req.url);
-    const origin = req.headers.get("origin") ?? "";
-    const allowed = allowOrigin(origin, env);
+    const allowed = allowOrigin(req.headers.get("origin") ?? "", env);
     const cors = { "access-control-allow-origin": allowed ?? "null", "access-control-allow-methods": "GET, OPTIONS", vary: "origin" };
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
-    if (!allowed) return new Response("origem n\xE3o autorizada", { status: 403, headers: cors });
+    if (!allowed) return new Response("origem n\xE3o autorizada", { status: 403, headers: { ...cors, "cache-control": "no-store" } });
     if (req.method !== "GET") return new Response("m\xE9todo n\xE3o suportado", { status: 405, headers: cors });
-    const json = (data, status = 200, maxAge = 0) => new Response(JSON.stringify(data), { status, headers: { ...cors, "content-type": "application/json; charset=utf-8", "cache-control": maxAge ? `public, max-age=${maxAge}` : "no-store" } });
-    if (url.pathname === "/saude") return json({ ok: true });
-    const cache = globalThis.caches.default;
+    const cache = globalThis.caches?.default;
     const key = new Request(`https://cache.cyberwave${url.pathname}${url.search}`);
-    const hit = await cache.match(key);
+    const hit = await cache?.match(key);
     if (hit) {
       const r = new Response(hit.body, hit);
       for (const [k, v] of Object.entries(cors)) r.headers.set(k, v);
       return r;
     }
-    let res;
-    if (url.pathname === "/buscar") {
-      const q = (url.searchParams.get("q") ?? "").trim().slice(0, 200);
-      if (!q) return json({ erro: "faltou q" }, 400);
-      try {
-        res = json(await buscar(q), 200, 21600);
-      } catch (e) {
-        return json({ erro: String(e) }, 502);
-      }
-    } else if (url.pathname.startsWith("/deezer/")) {
-      const path = url.pathname.slice("/deezer".length);
-      if (!/^\/(search|track|album|playlist|artist|chart)(\/|$)/.test(path)) return json({ erro: "caminho n\xE3o permitido" }, 400);
-      const up = await fetch(`https://api.deezer.com${path}${url.search}`, { headers: { "user-agent": UA } });
-      res = new Response(up.body, { status: up.status, headers: { ...cors, "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=21600" } });
-    } else {
-      return json({ erro: "use /buscar?q=" }, 404);
-    }
-    if (res.ok) await cache.put(key, res.clone());
+    const out = await handle(url, env);
+    const res = new Response(out.body, {
+      status: out.status,
+      headers: { ...cors, "content-type": out.contentType, "cache-control": out.maxAge ? `public, max-age=${out.maxAge}` : "no-store" }
+    });
+    if (cache && out.maxAge && out.status === 200) await cache.put(key, res.clone());
     return res;
   }
 };
