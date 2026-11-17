@@ -165,7 +165,7 @@ var INNERTUBE = {
 };
 
 // src/worker/musica-core.ts
-var VERSAO = "v21";
+var VERSAO = "v22";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 var COOKIE = "SOCS=CAI; CONSENT=YES+";
 function allowOrigin(origin, env) {
