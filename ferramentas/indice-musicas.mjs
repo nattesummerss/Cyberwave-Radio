@@ -532,6 +532,7 @@ var Limiter = class {
     if (at > now) await sleep(at - now);
   }
 };
+var ytLimit = { music: new Limiter(100), web: new Limiter(100) };
 var deezerLimit = new Limiter(130);
 async function deezer(path) {
   for (let i = 0; i < 3; i++) {
@@ -596,6 +597,7 @@ async function main(env = process.env) {
   const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
   const log = (s) => console.log(s);
   deezerLimit.gapMs = Math.max(0, Number(env.MUSICAS_DEEZER_INTERVALO_MS || 130) || 0);
+  ytLimit.music.gapMs = ytLimit.web.gapMs = Math.max(0, Number(env.MUSICAS_YT_INTERVALO_MS || 100) || 0);
   const H = { ytm: health("YouTube Music (busca)"), yt: health("YouTube (busca)"), lastfm: health("Last.fm (v\xEDdeo da faixa)"), oembed: health("Confer\xEAncia no YouTube (oEmbed)"), deezer: health("Deezer (listas de m\xFAsicas)"), apple: health("Apple Music (paradas)") };
   const avisos = [];
   let st = emptyState();
@@ -792,11 +794,19 @@ async function main(env = process.env) {
       return { ok: false, motivo: "erro" };
     }
   };
+  const isAtv = (h) => h.official === true || / - topic$/i.test(h.channel.trim());
+  const ordered = (good) => {
+    if (!good.length) return [];
+    const best = good[0];
+    const first = good.find((c) => c.atv && c.s >= best.s - 10) ?? best;
+    const clip = good.find((c) => !c.atv && c !== first);
+    return [first, ...clip ? [clip] : [], ...good.filter((c) => c !== first && c !== clip)];
+  };
   const resolve = async (seed) => {
     if (seed.pin) {
       const e = H.oembed.desligado ? null : await oembed(seed.pin);
       if (e && !e.ok && e.motivo !== "erro") avisos.push(`O v\xEDdeo fixado para "${seed.a} - ${seed.t}" ${e.motivo === "bloqueado" ? "n\xE3o pode tocar fora do YouTube" : "n\xE3o existe mais"} (${seed.pin}).`);
-      return { ids: [seed.pin], via: "pedido (v\xEDdeo fixado)", s: 100 };
+      return { ids: [seed.pin], via: "pedido (v\xEDdeo fixado)", s: 100, web: false };
     }
     const track = { title: seed.t, artist: seed.a, duration: seed.d };
     const q = `${firstArtist(seed.a)} ${noFeat(seed.t)}`.trim();
@@ -805,13 +815,16 @@ async function main(env = process.env) {
       if (!VIDEO.test(h.id)) return;
       const s = scoreCandidate(track, h) + bonus;
       const prev = cands.get(h.id);
-      if (!prev || s > prev.s) cands.set(h.id, { id: h.id, s, cov: titleCoverage(track, h), via: prev ? `${prev.via} + ${via}` : via, checked: prev?.checked });
+      const atv = isAtv(h) || !!prev?.atv;
+      if (!prev || s > prev.s) cands.set(h.id, { id: h.id, s, cov: titleCoverage(track, h), via: prev ? `${prev.via} + ${via}` : via, atv, checked: prev?.checked });
+      else prev.atv = atv;
     };
     const bestScore = () => Math.max(0, ...[...cands.values()].filter((c) => c.cov >= MIN_COVER).map((c) => c.s));
-    const goodCount = () => [...cands.values()].filter((c) => c.s >= MIN_SCORE && c.cov >= MIN_COVER).length;
     let answered = false;
+    let web = false;
     if (!H.ytm.desligado) {
       try {
+        await ytLimit.music.wait();
         for (const h of await innertube("music", q, 9e3)) add(h, "YouTube Music");
         mark(H.ytm, true);
         answered = true;
@@ -819,11 +832,13 @@ async function main(env = process.env) {
         mark(H.ytm, false, e);
       }
     }
-    if (goodCount() < 2 && !H.yt.desligado) {
+    if (!H.yt.desligado) {
       try {
+        await ytLimit.web.wait();
         for (const h of await innertube("web", q, 9e3)) add(h, "YouTube");
         mark(H.yt, true);
         answered = true;
+        web = true;
       } catch (e) {
         mark(H.yt, false, e);
       }
@@ -858,7 +873,7 @@ async function main(env = process.env) {
     const good = [...cands.values()].filter((c) => c.s >= MIN_SCORE && c.cov >= MIN_COVER).sort((a, b) => b.s - a.s);
     const ids = [];
     let checks = 0;
-    for (const c of good) {
+    for (const c of ordered(good)) {
       if (ids.length >= MAX_IDS) break;
       if (!c.checked && !H.oembed.desligado && checks < 4) {
         checks++;
@@ -869,16 +884,59 @@ async function main(env = process.env) {
     }
     if (!ids.length) return null;
     const top = good.find((c) => c.id === ids[0]);
-    return { ids, via: top.via, s: top.s };
+    return { ids, via: top.via, s: top.s, web };
+  };
+  const pendingClip = () => Object.entries(st.faixas).filter(([, e]) => !e.w && !e.via.startsWith("pedido (v\xEDdeo fixado)"));
+  const enrichList = pendingClip().map(([k]) => k);
+  let conferidas = 0;
+  let clipes = 0;
+  const enrich = async (key) => {
+    const e = st.faixas[key];
+    if (!e || e.w) return true;
+    const [ka, kt] = key.split("|");
+    const track = { title: e.t || kt, artist: e.a || ka, duration: e.d };
+    const q = `${firstArtist(track.artist)} ${noFeat(track.title)}`.trim();
+    let hits;
+    try {
+      await ytLimit.web.wait();
+      hits = await innertube("web", q, 9e3);
+      mark(H.yt, true);
+    } catch (err) {
+      mark(H.yt, false, err);
+      return false;
+    }
+    const good = hits.filter((h) => VIDEO.test(h.id) && !isAtv(h)).map((h) => ({ id: h.id, s: scoreCandidate(track, h), cov: titleCoverage(track, h) })).filter((c) => c.s >= MIN_SCORE && c.cov >= MIN_COVER).sort((a, b) => b.s - a.s);
+    const inList = good.find((c) => e.ids.includes(c.id));
+    if (inList) {
+      if (e.ids[0] !== inList.id && e.ids[1] !== inList.id) e.ids = [e.ids[0], inList.id, ...e.ids.slice(1).filter((x) => x !== inList.id)].slice(0, MAX_IDS);
+    } else {
+      for (const c of good.slice(0, 2)) {
+        const chk = H.oembed.desligado ? null : await oembed(c.id);
+        if (chk && !chk.ok && chk.motivo !== "erro") continue;
+        e.ids = [e.ids[0], c.id, ...e.ids.slice(1)].slice(0, MAX_IDS);
+        clipes++;
+        break;
+      }
+    }
+    e.w = 1;
+    conferidas++;
+    return true;
   };
   let novas = 0;
   let naoEncontradas = 0;
   let done = 0;
   const exemplos = [];
   const allSearchOff = () => H.ytm.desligado && H.yt.desligado && H.lastfm.desligado;
+  let turn = 0;
   const worker = async (w) => {
     await sleep(w * 150);
     while (Date.now() < deadline && !allSearchOff()) {
+      if (enrichList.length && !H.yt.desligado && (turn++ % 2 === 0 || !queue.length)) {
+        await enrich(enrichList.shift());
+        if (++done % 25 === 0) saveState();
+        if (done % 200 === 0) writeIndex();
+        continue;
+      }
       const item = queue.shift();
       if (!item) {
         if (!expanding) break;
@@ -905,7 +963,7 @@ async function main(env = process.env) {
       }
       delete st.fila[key];
       if (r) {
-        st.faixas[key] = { a: seed.a, t: seed.t, ids: r.ids, via: r.via, s: r.s, em: Date.now() };
+        st.faixas[key] = { a: seed.a, t: seed.t, ids: r.ids, via: r.via, s: r.s, em: Date.now(), ...seed.d ? { d: seed.d } : {}, ...r.web ? { w: 1 } : {} };
         delete st.falhas[key];
         novas++;
         if (exemplos.length < 6) exemplos.push(`${seed.a} \u2013 ${seed.t} \u2192 ${r.ids[0]} (${r.via}, nota ${r.s})`);
@@ -930,6 +988,7 @@ async function main(env = process.env) {
     `| M\xFAsicas completas prontas no site | **${prontas.toLocaleString("pt-BR")}** (+${novas} nesta execu\xE7\xE3o) |`,
     `| Esperando na fila | ${fila.toLocaleString("pt-BR")}${fila ? " \u2014 continua na pr\xF3xima execu\xE7\xE3o" : ""} |`,
     `| Sem v\xEDdeo confi\xE1vel nesta execu\xE7\xE3o | ${naoEncontradas} (tenta de novo em 7 dias) |`,
+    `| Clipe oficial como 2\xAA op\xE7\xE3o (m\xFAsicas antigas) | ${conferidas} conferidas, ${clipes} clipes adicionados${pendingClip().length ? ` \u2014 faltam ${pendingClip().length.toLocaleString("pt-BR")}, continua na pr\xF3xima execu\xE7\xE3o` : " \u2014 todas conferidas"} |`,
     ...Object.values(H).map((h) => `| ${h.nome} | ${situacao(h)} |`),
     `| Pedidos (musicas/pedidos.txt) | ${pedidos.length ? `${pedidos.length} linha(s)` : "nenhum"} |`,
     `| Tempo | ${Math.floor(secs / 60)} min ${String(secs % 60).padStart(2, "0")} s |`
