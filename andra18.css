@@ -1,0 +1,24 @@
+/* ANDRA-18 — rig frontal 1.5x para a Cyberwave Radio */
+:root { --a18-cyan:#42e9ff; --a18-pink:#ff49dc; --a18-ink:#080b18; }
+.andra18-stage {
+  position:relative; width:min(440px, 94vw); aspect-ratio:2/3; overflow:hidden;
+  background:#080b18; border:1px solid rgba(66,233,255,.78);
+  clip-path:polygon(0 0,calc(100% - 22px) 0,100% 22px,100% 100%,22px 100%,0 calc(100% - 22px));
+  box-shadow:0 0 26px rgba(66,233,255,.28), inset 0 0 42px rgba(255,73,220,.08);
+  color:#eefcff; font-family:Inter,Segoe UI,system-ui,sans-serif;
+}
+.andra18-stage canvas { width:100%; height:100%; display:block; }
+.andra18-stage::after {
+  content:""; position:absolute; inset:0; pointer-events:none; mix-blend-mode:soft-light;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.045) 0 1px,transparent 1px 4px);
+}
+.andra18-hud { position:absolute; inset:0; z-index:2; pointer-events:none; }
+.andra18-live { position:absolute; left:14px; top:14px; border:1px solid var(--a18-pink); color:var(--a18-pink); padding:5px 9px; font:700 11px/1.1 monospace; letter-spacing:.18em; background:rgba(8,11,24,.58); }
+.andra18-live::before { content:"● "; animation:a18-pulse 1s steps(1) infinite; }
+.andra18-eq { position:absolute; right:15px; top:15px; display:flex; align-items:flex-end; gap:3px; height:26px; }
+.andra18-eq i { display:block; width:4px; min-height:3px; background:var(--a18-cyan); box-shadow:0 0 7px var(--a18-cyan); }
+.andra18-caption { position:absolute; left:14px; right:14px; bottom:14px; min-height:45px; padding:12px 13px 11px 15px; border-left:3px solid var(--a18-cyan); background:linear-gradient(90deg,rgba(8,11,24,.92),rgba(8,11,24,.56)); font-size:14px; line-height:1.35; text-shadow:0 1px 2px #000; }
+.andra18-caption strong { display:block; color:var(--a18-cyan); font:700 10px/1.2 monospace; letter-spacing:.16em; margin-bottom:3px; }
+.andra18-stage[data-state="talking"] { box-shadow:0 0 34px rgba(255,73,220,.48), inset 0 0 50px rgba(66,233,255,.08); }
+@keyframes a18-pulse { 50% { opacity:.25; } }
+@media (prefers-reduced-motion:reduce) { .andra18-live::before{animation:none} }

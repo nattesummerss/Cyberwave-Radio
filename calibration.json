@@ -1,0 +1,79 @@
+{
+  "asset": "assets/andra18.png",
+  "source_size": {
+    "width": 1024,
+    "height": 1536
+  },
+  "zoom": 1.5,
+  "crop_before_resize": {
+    "x": 171,
+    "y": 55,
+    "width": 683,
+    "height": 1024
+  },
+  "face": {
+    "x": 317,
+    "y": 362,
+    "width": 394,
+    "height": 394
+  },
+  "left_eye": {
+    "x": 394,
+    "y": 473,
+    "width": 85,
+    "height": 85,
+    "center": [
+      436.5,
+      515.5
+    ]
+  },
+  "right_eye": {
+    "x": 550,
+    "y": 481,
+    "width": 77,
+    "height": 77,
+    "center": [
+      588.5,
+      519.5
+    ]
+  },
+  "mouth": {
+    "x": 438,
+    "y": 628,
+    "width": 152,
+    "height": 72,
+    "center": [
+      514,
+      660
+    ]
+  },
+  "jaw": {
+    "x": 412,
+    "y": 606,
+    "width": 204,
+    "height": 120
+  },
+  "mouth_patch": {
+    "x": 414,
+    "y": 598,
+    "width": 200,
+    "height": 126
+  },
+  "mouth_visemes": {
+    "asset": "assets/mouth_visemes.png",
+    "frames": 6,
+    "frame_size": [
+      200,
+      126
+    ],
+    "speech_max_frame": 4,
+    "source": "derived from approved still lip texture"
+  },
+  "breathing": {
+    "period_seconds": 4.25,
+    "vertical_lift_px": 1.7,
+    "scale_x": 0.0011,
+    "scale_y": 0.0015,
+    "config_key": "breathAmount"
+  }
+}
