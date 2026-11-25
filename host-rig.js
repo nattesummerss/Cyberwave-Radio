@@ -1,4 +1,7 @@
-/* Cyberwave Radio — ANDRA-18 anchor rig v8 "camada de vida" (v37)
+/* Cyberwave Radio — ANDRA-18 anchor rig v8.1 "camada de vida" (v38)
+ * v38: começa a animar só com host.png; host_closed.png e mouth_visemes.png são opcionais (tenta de novo 1x e, se
+ *      falharem, ela anima sem esses quadros). O canvas fica por cima da foto (posição absoluta), então a foto nunca
+ *      sai do lugar, mesmo se algo falhar.
  * Mesma still frontal (public/assets/host.png, 1024x1536, ampliada 1,5x), mesmos olhos e boca do rig v7.
  * Compatível com host.js: window.CyberwaveRig.bind/gesture/emote/pose/setTalking/setMouth/lookAt/state.
  *
@@ -27,6 +30,7 @@
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),lerp=(a,b,t)=>a+(b-a)*t,smooth=t=>t*t*(3-2*t),rnd=(a,b)=>a+Math.random()*(b-a);
   const mk=(w,h)=>{const k=document.createElement('canvas');k.width=w;k.height=h;return k;};
   const cv=mk(W,H);cv.className='cw-rig';cv.setAttribute('aria-hidden','true');
+  cv.style.position='absolute';cv.style.left='0';cv.style.top='0'; // [v38] por cima da foto: nunca empurra a foto para o lado
   img.insertAdjacentElement('afterend',cv);const c=cv.getContext('2d');
   const F=mk(FR.w,FR.h),f=F.getContext('2d');f.translate(-FR.x,-FR.y); // rosto: still + piscada + boca + sobrancelhas
   const HS=mk(HB.w,HB.h),HM=mk(HB.w,HB.h);         // camada da cabeça (recortada uma vez) e máscara suave
@@ -40,8 +44,10 @@
       g=b.createRadialGradient(0,0,0,0,0,r.rx);g.addColorStop(0,'#000');g.addColorStop(.55,'#000');g.addColorStop(1,'rgba(0,0,0,0)');
       b.fillStyle=g;b.fillRect(-r.rx,-r.rx,r.rx*2,r.rx*2);b.restore();}
   })();
-  const closed=new Image();closed.decoding='async';closed.src=(img.currentSrc||img.src).replace(/host\.png(?:\?.*)?$/,'host_closed.png');
-  const visemes=new Image();visemes.decoding='async';visemes.src=(img.currentSrc||img.src).replace(/host\.png(?:\?.*)?$/,'mouth_visemes.png');
+  // [v38] imagens extras opcionais: tenta de novo uma vez (sem cache) e, se falhar, segue sem elas.
+  const extra=(name)=>{const o=new Image();o.decoding='async';o.ok=false;o.tries=0;const url=(img.currentSrc||img.src).replace(/host\.png(?:\?.*)?$/,name);
+    o.onload=()=>{o.ok=true;};o.onerror=()=>{if(++o.tries<2)o.src=url+'?r='+Date.now();};o.src=url;return o;};
+  const closed=extra('host_closed.png'),visemes=extra('mouth_visemes.png');
   const reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
   const CFG={amp:1,life:1,breathAmount:1,headShiftX:3,headShiftY:2,headRotDeg:.35,bodyShiftX:2,weightShiftX:1,followCursor:true,gestureEveryMs:[4200,7800]};
   const S={t:0,last:0,talking:false,mouth:0,target:0,
@@ -50,10 +56,9 @@
     aim:{yaw:0,pitch:0,roll:0},hp:{yaw:0,pitch:0,roll:0},hv:{yaw:0,pitch:0,roll:0},nextAim:1.2,
     brow:0,browT:0,nextIdleBrow:rnd(6,14),env:0,envSlow:0,nodCool:0,ph:[rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9)]};
   let ready=0,timeline=[],fallback=null,freq=null;
-  const loaded=()=>{if(++ready===3){const h=HS.getContext('2d');h.drawImage(img,HB.x,HB.y,HB.w,HB.h,0,0,HB.w,HB.h);h.globalCompositeOperation='destination-in';h.drawImage(HM,0,0);
+  const loaded=()=>{if(ready)return;ready=3;{const h=HS.getContext('2d');h.drawImage(img,HB.x,HB.y,HB.w,HB.h,0,0,HB.w,HB.h);h.globalCompositeOperation='destination-in';h.drawImage(HM,0,0);
     img.style.display='none';requestAnimationFrame(frame);}};
-  if(img.complete&&img.naturalWidth)loaded();else img.addEventListener('load',loaded,{once:true});closed.onload=loaded;visemes.onload=loaded;
-  closed.onerror=()=>{closed.src=img.currentSrc||img.src;};
+  if(img.complete&&img.naturalWidth)loaded();else img.addEventListener('load',loaded,{once:true});
   function startTalk(){S.talking=true;root.classList.add('is-talking');S.nextAim=Math.min(S.nextAim,.4);}
   function stopTalk(){S.talking=false;S.target=0;timeline=[];root.classList.remove('is-talking');}
   function setTalking(v){v?startTalk():stopTalk();}
@@ -85,9 +90,9 @@
     if(big&&Math.random()<.4)blink(false);
     S.nextAim=talk?rnd(1.2,3.2):rnd(2,6);
   }
-  function drawBlink(e,k){if(k<=.01)return;f.save();f.beginPath();f.ellipse(e.cx,e.cy,e.w*.53,e.h*.40,0,0,Math.PI*2);f.clip();f.globalAlpha=k;f.drawImage(closed,0,0,W,H);f.restore();}
+  function drawBlink(e,k){if(k<=.01||!closed.ok)return;f.save();f.beginPath();f.ellipse(e.cx,e.cy,e.w*.53,e.h*.40,0,0,Math.PI*2);f.clip();f.globalAlpha=k;f.drawImage(closed,0,0,W,H);f.restore();}
   function drawMouth(open){
-    if(open<.035)return;const q=clamp(open/.78*4,0,4),a=Math.floor(q),b=Math.min(5,a+1),mix=q-a;
+    if(open<.035||!visemes.ok)return;const q=clamp(open/.78*4,0,4),a=Math.floor(q),b=Math.min(5,a+1),mix=q-a;
     f.save();f.globalAlpha=1-mix;f.drawImage(visemes,a*P.w,0,P.w,P.h,P.x,P.y,P.w,P.h);
     if(mix>.01){f.globalAlpha=mix;f.drawImage(visemes,b*P.w,0,P.w,P.h,P.x,P.y,P.w,P.h);}f.restore();
   }
@@ -158,7 +163,7 @@
   document.addEventListener('click',e=>{const el=e.target&&e.target.closest&&e.target.closest('[data-cw-gesture],[data-cw-emote],[data-cw-say],[data-cw-pose]');if(!el)return;const d=el.dataset;
     if(d.cwGesture)gesture(d.cwGesture);if(d.cwEmote)emote(d.cwEmote);if(d.cwPose)pose(d.cwPose);if(d.cwSay)CMDS.say(d.cwSay);});
   window.CyberwaveRig={bind,gesture,emote,lookAt,pose,blink,follow:v=>CFG.followCursor=!!v,setMouth,setTalking,config:CFG,
-    state:()=>({ready:ready>=3,rig:'v8',talking:S.talking,mouth:+S.mouth.toFixed(3),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
+    state:()=>({ready:ready>=3,rig:'v8.1',images:{foto:!!img.naturalWidth,olhosFechados:closed.ok,boca:visemes.ok},talking:S.talking,mouth:+S.mouth.toFixed(3),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
       head:{yaw:+S.hp.yaw.toFixed(2),pitch:+S.hp.pitch.toFixed(2),roll:+S.hp.roll.toFixed(2)},brows:+(S.browCur||0).toFixed(2),reducedMotion:!!reduce}), // [site]
     gestures:['nod','shake','lean','wave','present','pointLeft','pointRight','openArms','shrug','thumbsUp','headsetTouch'],emotes:['neutral','happy','surprised','thinking','wink'],presets:['calm','energetic','dj'],landmarks:{eyes:E,mouth:M,jaw:J,brows:BROWS,head:HEAD,pivot:PIV}};
 })();
