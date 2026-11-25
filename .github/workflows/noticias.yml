@@ -8,7 +8,8 @@
 # Este arquivo precisa ficar exatamente em .github/workflows/noticias.yml no repositório.
 # A cada execução, a aba Actions mostra um resumo com o status de cada fonte.
 # Uma vez por dia o GitHub também procura rádios novas para as abas (radios-extras.json; ver o passo
-# "Descobrir rádios novas"). A cada 6 horas atualiza os episódios da seção Podcasts (podcasts.json).
+# "Descobrir rádios novas", todas as abas desde a v34). A cada 6 horas atualiza os episódios da seção Podcasts
+# (podcasts.json) e, a cada 7 dias, procura podcasts e audiolivros novos cujo áudio toca na rede da empresa (AVD).
 # Se uma execução falhar, a próxima (a cada 15 minutos) publica de novo sozinha. Para não esperar, use
 # Actions → "Cyberwave Radio - site e notícias" → Run workflow; "Re-run jobs" também funciona (v28).
 
@@ -236,6 +237,10 @@ jobs:
       # Settings → Secrets and variables → Actions. Sem os segredos, usa o pacote edge-tts
       # (mesmas vozes neurais, sem cadastro, serviço não oficial que pode parar sem aviso).
       # Trocar a voz: variável ANDRA_VOZ (ex.: pt-BR-FranciscaNeural).
+      # Idiomas (v35): cada fala é dividida em trechos por idioma com o mesmo código do site (bloco andra-idioma do
+      # index.html, src/lib/andra-lang.ts). Nomes de rádios e músicas e manchetes em inglês/espanhol/etc. são gravados
+      # na voz feminina daquele idioma e juntados num MP3 só. Vozes: ANDRA_VOZ_EN (padrão en-US-AvaNeural) e
+      # ANDRA_VOZ_ES (padrão es-MX-DaliaNeural). Com Azure e voz Multilingual, a própria voz troca de idioma.
       # Se esta etapa falhar, o site é publicado assim mesmo e usa a voz feminina do navegador.
       - name: Restaurar áudios já gravados
         uses: actions/cache/restore@v5
@@ -274,13 +279,15 @@ jobs:
           RADIOS_NOVAS_A_CADA_HORAS: ${{ vars.RADIOS_NOVAS_A_CADA_HORAS }}
         run: |
           cat > /tmp/descobrir.py <<'SCRIPT'
-          # Descobre rádios novas para as abas do site, uma vez a cada 24 h (variável RADIOS_NOVAS_A_CADA_HORAS).
-          # Fonte: diretório público Radio Browser, buscando por estilo (R&B, rock, esportes...) e por país (Brasil).
-          # Só entram rádios da StreamTheWorld: são as únicas que tocam na rede da empresa (AVD) - teste de 19/11/2026.
+          # Descobre rádios novas para TODAS as abas do site, uma vez a cada 24 h (variável RADIOS_NOVAS_A_CADA_HORAS).
+          # Fonte: diretório público Radio Browser, buscando por estilo (R&B, trap, rock, esportes...) e por país (Brasil).
+          # Nas abas normais só entram rádios da StreamTheWorld: são as únicas que tocam na rede da empresa (AVD) - teste
+          # de 19/11/2026. São Paulo, Rio e BH (v34) recebem rádios dessas cidades (com a frequência, quando o nome traz).
+          # A aba "Fora da empresa" (v34) recebe rádios de outros servidores (https), que tocam no celular e em casa.
           # Cada candidata é conferida antes de entrar (a StreamTheWorld confirma que existe e o áudio responde).
           # As rádios já descobertas são conferidas de novo a cada busca; saem depois de 3 buscas seguidas sem áudio.
           # Resultado: radios-extras.json, publicado junto com o site (o site junta essas rádios às abas).
-          import concurrent.futures as cf, gzip, json, os, re, socket, sys, time, unicodedata, urllib.parse, urllib.request
+          import concurrent.futures as cf, gzip, hashlib, json, os, re, socket, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
           socket.setdefaulttimeout(20)
           from datetime import datetime, timezone
           from pathlib import Path
@@ -300,14 +307,20 @@ jobs:
           SITE_URL = (os.environ.get("SITE_URL") or "").strip()
           UA = "Mozilla/5.0 (CyberwaveRadio; descoberta de radios; +https://github.com)"
           STW = "https://playerservices.streamtheworld.com/api/livestream-redirect/"
-          TABS = ["rnb", "rock", "sports", "intl", "web"]
-          TAB_NAME = {"rnb": "R&B", "rock": "Rock internacional", "sports": "Esportes", "intl": "Internacionais", "web": "Web e outras cidades"}
+          TABS = ["sp", "rj", "bh", "rnb", "rock", "sports", "intl", "web", "fora"]
+          TAB_NAME = {"sp": "São Paulo", "rj": "Rio de Janeiro", "bh": "Belo Horizonte", "rnb": "R&B", "rock": "Rock internacional", "sports": "Esportes",
+                      "intl": "Internacionais", "web": "Web e outras cidades", "fora": "Fora da empresa"}
+          CITY_TABS = ("sp", "rj", "bh")
           RETRY_DAYS = 14   # candidata que falhou só é tentada de novo depois disso
           MAX_FAILS = 3     # buscas seguidas sem áudio até a rádio sair
           BUDGET_S = 300    # tempo máximo de conferência por execução
           AUDIO_CT = re.compile(r"audio/|application/ogg|video/mp2t|application/octet-stream|aacp", re.I)
           PLAYLIST_CT = re.compile(r"mpegurl|x-scpls|pls", re.I)
           URL_OK = re.compile(r"^https://playerservices\.streamtheworld\.com/api/livestream-redirect/[A-Za-z0-9_]{3,40}\.(aac|mp3)$")
+          # Aba "Fora da empresa": qualquer servidor https (menos a StreamTheWorld), sem lista de reprodução e sem senha/token no endereço.
+          WEB_URL_OK = re.compile(r"^https://(?![^/]*streamtheworld\.com)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?::\d{2,5})?/[^\s\"'<>\\{}|^`]{0,250}$")
+          TOKEN_Q = re.compile(r"token|signature|expires|sig=|auth|session|key=|password|passwd", re.I)
+          PLAYLIST_EXT = re.compile(r"\.(m3u8?|pls|asx|xspf)(\?|$)", re.I)
           ID_OK = re.compile(r"^extra-[a-z0-9-]{2,60}$")
 
           def now_iso(t=None): return datetime.fromtimestamp(time.time() if t is None else t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -369,6 +382,34 @@ jobs:
 
           def tags_of(r): return {t.strip().lower() for t in (r.get("tags") or "").split(",") if t.strip()}
 
+          # Cidades das abas com dial (v34). Nome completo da cidade no nome da rádio basta; sigla (SP, RJ, BH) ou ponto de
+          # montagem (NOVABRASIL_SPAAC, CBN_BHAAC...) só valem se o estado bater (ou não vier no diretório).
+          CITY = {
+              "sp": (re.compile(r"\b(sao paulo|sampa)\b"), re.compile(r"\bsp\b"), re.compile(r"SAOPAULO|SAO_PAULO|_SP(?=AAC|MP3|_|\d|$)|SP(?=AAC$)"), ("sao paulo",)),
+              "rj": (re.compile(r"\brio de janeiro\b"), re.compile(r"\b(rj|rio(?! (grande|preto|claro|verde|branco|negro|bonito|largo|do sul|pardo)))\b"),
+                     re.compile(r"_RJ(?=AAC|MP3|_|\d|$)|RJ(?=AAC$)|_RIO(?=AAC|MP3|_|\d|$)|^RIO(?=AAC|_|$)"), ("rio de janeiro",)),
+              "bh": (re.compile(r"\bbelo horizonte\b"), re.compile(r"\bbh\b"), re.compile(r"BELOHORIZONTE|_BH(?=AAC|MP3|_|\d|$)|^BH(?=FM|AAC)"), ("minas gerais", "belo horizonte")),
+          }
+
+          def city_of(name, mount, state):
+              """Aba de cidade (sp/rj/bh) de uma rádio do Brasil; None se não der para ter certeza."""
+              n = " " + re.sub(r"[^a-z0-9]+", " ", fold(name or "")) + " "
+              st, m = re.sub(r"[^a-z ]+", " ", fold(state or "")).strip(), (mount or "").upper()
+              for c, (full, short, mt, states) in CITY.items():
+                  state_ok = not st or st in ("brasil", "brazil") or any(x in st for x in states)
+                  if full.search(n) or ((short.search(n) or mt.search(m)) and state_ok):
+                      return c
+              return None
+
+          FREQ = re.compile(r"(?<![\d.,])(8[7-9]|9\d|10[0-7])[.,]([1-9])(?!\d)")
+
+          def freq_of(name):
+              """Frequência FM escrita no nome (ex.: "Rádio X 98.1 FM" -> 98.1); None se não tiver."""
+              for m in FREQ.finditer(name or ""):
+                  f = float(f"{m.group(1)}.{m.group(2)}")
+                  if 87.5 <= f <= 107.9: return f
+              return None
+
           def classify(r):
               """Aba da rádio: sports, web (Brasil), rnb, rock ou intl; None = fora do catálogo (religiosa, país desconhecido)."""
               tags, name = tags_of(r), r.get("name") or ""
@@ -393,6 +434,7 @@ jobs:
                   hh = has("hip hop", "hip-hop", "hiphop", "rap", "trap", "urban", "rhythmic", "rhythmic contemporary", "hip hop/r&b", "r&b/hip hop")
                   rb = has("rnb", "r&b", "r'n'b", "r n b", "r & b", "rhythm and blues", "slow jams", "quiet storm", "urban ac", "urban adult contemporary")
                   soul = has("soul", "neo soul", "neo-soul", "classic soul", "motown", "funk soul")
+                  if has("trap", "drill"): return "Trap e hip-hop"
                   if hh and (rb or soul): return "Hip-hop e R&B"
                   if hh: return "Hip-hop"
                   if rb and soul: return "R&B e soul"
@@ -480,12 +522,14 @@ jobs:
           def looks_audio(b):
               return b[:3] == b"ID3" or b[:4] == b"OggS" or any(b[i] == 0xFF and (b[i + 1] & 0xF0) == 0xF0 for i in range(min(len(b) - 1, 4096)))
 
-          def probe(url, depth=0):
+          def probe(url, depth=0, https_only=False):
               """True/False e motivo: o endereço responde com áudio?"""
               try:
                   req = urllib.request.Request(url, headers={"User-Agent": UA, "Icy-MetaData": "0", "Accept": "*/*"})
                   with urllib.request.urlopen(req, timeout=12) as r:
                       ct = r.headers.get("Content-Type", "")
+                      if https_only and not str(r.geturl() or url).startswith("https://"): return False, "redireciona para http (o site bloqueia)"
+                      if PLAYLIST_CT.search(ct) and https_only: return False, "lista de reprodução (não toca direto no site)"
                       if PLAYLIST_CT.search(ct) and depth == 0:
                           links = re.findall(r"https?://[^\s\"'<>]+", r.read(65536).decode("utf-8", "replace"))
                           return probe(links[0], 1) if links else (False, "lista sem endereço")
@@ -513,7 +557,12 @@ jobs:
               return (code.group(1) if code else "?"), (codec.group(1).lower() if codec else ""), (int(kbps.group(1)) // 1000 if kbps else None)
 
           def verify(st):
-              """Confere uma rádio: a StreamTheWorld diz que está no ar e o endereço responde com áudio. Devolve (ok, motivo, rádio)."""
+              """Confere uma rádio: a StreamTheWorld diz que está no ar e o endereço responde com áudio. Devolve (ok, motivo, rádio).
+              Rádio de outro servidor (aba "Fora da empresa", v34): o endereço https responde com áudio."""
+              if not st.get("mount"):
+                  if not WEB_URL_OK.match(st.get("url") or ""): return False, "endereço inválido", st
+                  ok, why = probe(st["url"], https_only=True)
+                  return (True, "", dict(st)) if ok else (False, why, st)
               try: code, codec, kbps = provision(st["mount"])
               except Exception as e: return False, f"StreamTheWorld não respondeu ({type(e).__name__})", st
               if code != "200": return False, "StreamTheWorld " + code + {"404": " (não existe)", "453": " (bloqueada no país do GitHub)"}.get(code, ""), st
@@ -537,6 +586,7 @@ jobs:
                       for u in (s.get("urls") or []) + (s.get("triton") or []):
                           mt = mount_of(u)
                           if mt: keys.add(key_of(mt))
+                          elif str(u).startswith("https://"): keys.add(web_key(u))
                       names.add(re.sub(r"[^a-z0-9]+", "", fold(s.get("name", ""))))
               except Exception as e:
                   print(f"::warning title=Rádios novas::não consegui ler as rádios do site ({e})")
@@ -544,13 +594,17 @@ jobs:
 
           def from_public(item):
               """Rádio publicada (radios-extras.json) de volta para o estado interno."""
-              if not isinstance(item, dict) or not URL_OK.match(str(item.get("url", ""))) or not ID_OK.match(str(item.get("id", ""))): return None
-              if item.get("tab") not in TABS: return None
-              mount = mount_of(item["url"])
-              return {"id": item["id"], "name": clean_text(item.get("name"), 60) or item["id"], "tab": item["tab"], "genre": clean_text(item.get("genre"), 40) or "Variedades",
-                      "place": clean_text(item.get("place"), 40) or "Web", "url": item["url"], "mount": mount, "key": key_of(mount),
-                      "codec": "MP3" if item["url"].endswith(".mp3") else "AAC", "bitrate": item.get("bitrate") if isinstance(item.get("bitrate"), int) else None,
-                      "addedAt": item.get("addedAt") if parse_iso(item.get("addedAt")) else now_iso(), "fails": 0}
+              if not isinstance(item, dict) or not ID_OK.match(str(item.get("id", ""))) or item.get("tab") not in TABS: return None
+              url = str(item.get("url", ""))
+              if not url_ok({"tab": item["tab"], "url": url}): return None
+              mount = mount_of(url) if item["tab"] != "fora" else None
+              out = {"id": item["id"], "name": clean_text(item.get("name"), 60) or item["id"], "tab": item["tab"], "genre": clean_text(item.get("genre"), 40) or "Variedades",
+                     "place": clean_text(item.get("place"), 40) or "Web", "url": url, "mount": mount, "key": key_of(mount) if mount else web_key(url),
+                     "codec": item.get("codec") if item.get("codec") in ("AAC", "MP3") else ("MP3" if url.endswith(".mp3") else "AAC"),
+                     "bitrate": item.get("bitrate") if isinstance(item.get("bitrate"), int) else None,
+                     "addedAt": item.get("addedAt") if parse_iso(item.get("addedAt")) else now_iso(), "fails": 0}
+              if item["tab"] in CITY_TABS and isinstance(item.get("freq"), (int, float)) and 87.5 <= item["freq"] <= 108: out["freq"] = float(item["freq"])
+              return out
 
           def load_state():
               try:
@@ -573,12 +627,13 @@ jobs:
           def public(s):
               out = {k: s[k] for k in ("id", "name", "tab", "genre", "place", "url", "codec", "addedAt") if s.get(k)}
               if s.get("bitrate"): out["bitrate"] = s["bitrate"]
+              if s.get("tab") in CITY_TABS and s.get("freq"): out["freq"] = s["freq"]
               out["fala"] = fala_of(s["name"], s["place"])
               return out
 
           def publish(state, keys):
               """Grava radios-extras.json (publicado com o site) só com rádios conferidas e que não estão no site."""
-              stations = [s for s in state["stations"] if s.get("key") not in keys and URL_OK.match(s.get("url", ""))]
+              stations = [s for s in state["stations"] if s.get("key") not in keys and url_ok(s)]
               order = {t: i for i, t in enumerate(TABS)}
               stations.sort(key=lambda s: (order.get(s["tab"], 9), -parse_iso(s.get("addedAt")), fold(s["name"])))
               data = {"updatedAt": state.get("searchedAt"), "nextAt": state.get("nextAt"), "perDay": PER_DAY, "maxPerTab": MAX_TAB,
@@ -588,15 +643,31 @@ jobs:
 
           # ---------- Busca ----------
 
-          QUERIES = ([{"tag": t, "limit": 500} for t in ("rnb", "r&b", "soul", "hip hop", "urban")]
+          QUERIES = ([{"tag": t, "limit": 500} for t in ("rnb", "r&b", "soul", "hip hop", "urban", "trap", "rap")]
                      + [{"tag": t, "limit": 500} for t in ("rock", "metal", "alternative", "punk")]
                      + [{"tag": t, "limit": 400} for t in ("sports", "deportes", "esportes", "futbol")]
                      + [{"countrycode": "BR", "limit": 2500}]
                      + [{"limit": 3000}]
                      + [{"tag": t, "limit": 300} for t in ("news", "jazz", "latin", "country", "dance", "80s")])
 
+          def web_candidate(r):
+              """Rádio de outro servidor para a aba "Fora da empresa" (só https, áudio direto, conferida pelo diretório)."""
+              url = (r.get("url_resolved") or r.get("url") or "").strip()
+              if not WEB_URL_OK.match(url) or PLAYLIST_EXT.search(url) or TOKEN_Q.search(urllib.parse.urlsplit(url).query): return None
+              if r.get("lastcheckok") not in (1, True) or r.get("hls") in (1, True): return None
+              codec = (r.get("codec") or "").upper()
+              if codec not in ("MP3", "AAC", "AAC+"): return None
+              tab = classify(r)
+              name = clean_name(r.get("name"))
+              if not tab or len(name) < 2: return None
+              clicks = int(r.get("clickcount") or 0) + int(r.get("votes") or 0) // 10
+              return {"key": web_key(url), "mount": None, "url": url, "tab": "fora", "name": name, "genre": genre_of(tab, r),
+                      "place": place_of(r), "clicks": clicks, "codec": "MP3" if codec == "MP3" else "AAC",
+                      "bitrate": int(r["bitrate"]) if str(r.get("bitrate") or "").isdigit() and 8 <= int(r["bitrate"]) <= 512 else None}
+
           def candidates():
-              """Rádios da StreamTheWorld do diretório, já com aba, gênero e lugar. None se o diretório não respondeu."""
+              """Rádios do diretório, já com aba, gênero e lugar: da StreamTheWorld (abas normais) e de outros servidores
+              (aba "Fora da empresa"). None se o diretório não respondeu."""
               pool, answered = {}, 0
               for params in QUERIES:
                   rows = radio_browser(params)
@@ -605,22 +676,43 @@ jobs:
                   for r in rows:
                       if not isinstance(r, dict): continue
                       mount = mount_of(r.get("url_resolved") or "") or mount_of(r.get("url") or "")
-                      if not mount: continue
+                      if not mount:
+                          c = web_candidate(r)
+                          if c and (c["key"] not in pool or c["clicks"] > pool[c["key"]]["clicks"]): pool[c["key"]] = c
+                          continue
                       tab = classify(r)
                       name = clean_name(r.get("name"))
                       if not tab or len(name) < 2: continue
+                      freq, genre_tab = None, tab
+                      if tab == "web":
+                          city = city_of(r.get("name") or "", mount, r.get("state"))
+                          if city: tab, freq = city, freq_of(r.get("name") or "")
                       key = key_of(mount)
                       clicks = int(r.get("clickcount") or 0) + int(r.get("votes") or 0) // 10
                       codec = (r.get("codec") or "").upper()
                       ext = "aac" if ("AAC" in mount.upper() or mount.upper().endswith("_ADP") or "AAC" in codec) else "mp3"
-                      c = {"key": key, "mount": mount, "ext": ext, "tab": tab, "name": name, "genre": genre_of(tab, r), "place": place_of(r),
+                      c = {"key": key, "mount": mount, "ext": ext, "tab": tab, "name": name, "genre": genre_of(genre_tab, r), "place": place_of(r),
                            "clicks": clicks, "bitrate": int(r["bitrate"]) if str(r.get("bitrate") or "").isdigit() and 8 <= int(r["bitrate"]) <= 512 else None}
+                      if freq: c["freq"] = freq
                       if key not in pool or clicks > pool[key]["clicks"]: pool[key] = c
               if not answered: return None
-              print(f"Radio Browser: {answered}/{len(QUERIES)} buscas responderam; {len(pool)} rádios da StreamTheWorld encontradas.")
+              web = sum(1 for c in pool.values() if c["tab"] == "fora")
+              print(f"Radio Browser: {answered}/{len(QUERIES)} buscas responderam; {len(pool) - web} rádios da StreamTheWorld e {web} de outros servidores encontradas.")
               return list(pool.values())
 
-          def slug(key): return "extra-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:60]
+          def slug(key):
+              if key.startswith("U:"):   # rádio de outro servidor: código curto e estável a partir do endereço
+                  return "extra-w-" + hashlib.sha1(key.encode()).hexdigest()[:12]
+              return "extra-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:60]
+
+          def web_key(url):
+              """Chave de rádio de outro servidor: servidor + caminho (sem a consulta), em minúsculas."""
+              try: u = urllib.parse.urlsplit(url)
+              except ValueError: return "U:"
+              return "U:" + (u.hostname or "").lower() + (u.path or "/").rstrip("/").lower()
+
+          def url_ok(s):
+              return bool(WEB_URL_OK.match(s.get("url", ""))) if s.get("tab") == "fora" else bool(URL_OK.match(s.get("url", "")))
 
           def run_parallel(items, fn, deadline):
               out = []
@@ -641,7 +733,8 @@ jobs:
               # Próxima busca: a data guardada, mas nunca depois de "última busca + intervalo atual" (vale na hora se o intervalo mudar).
               next_t = parse_iso(state.get("nextAt"))
               if parse_iso(state.get("searchedAt")): next_t = min(next_t, parse_iso(state.get("searchedAt")) + EVERY_H * 3600)
-              due = origin == "novo" or next_t <= started or not state.get("searchedAt")
+              # v34: abas novas na busca (São Paulo, Rio, BH e Fora da empresa) = busca já, sem esperar as 24 h.
+              due = origin == "novo" or next_t <= started or not state.get("searchedAt") or state.get("tabs") != TABS
               if not due:
                   pub = publish(state, keys)
                   left_h = (next_t - started) / 3600
@@ -665,6 +758,14 @@ jobs:
                           removed.append(s); state["rejected"][s["key"]] = now_iso()
                       else:
                           kept.append(s)
+              # v34: rádio de São Paulo, Rio ou BH que estava em "Web e outras cidades" vai para a aba da cidade.
+              for s in kept:
+                  if s.get("tab") == "web":
+                      city = city_of(s.get("name"), s.get("mount"), s.get("place"))
+                      if city:
+                          s["tab"] = city
+                          f = freq_of(s.get("name"))
+                          if f: s["freq"] = f
               # Limite por aba diminuiu: ficam as mais antigas (as que o ouvinte já conhece).
               per_tab = {t: sorted([s for s in kept if s["tab"] == t], key=lambda s: parse_iso(s.get("addedAt"))) for t in TABS}
               kept = [s for t in TABS for s in per_tab[t][:MAX_TAB]]
@@ -702,6 +803,7 @@ jobs:
               ok_search = pool is not None
               state["stations"] = kept
               state["searchedAt"] = now_iso()
+              state["tabs"] = TABS
               state["nextAt"] = now_iso(time.time() + (EVERY_H if ok_search else min(EVERY_H, 3)) * 3600)
               hist = state.setdefault("history", [])
               hist.append({"at": state["searchedAt"], "added": {t: [s["name"] for s in added[t]] for t in TABS if added[t]}, "removed": [s["name"] for s in removed]})
@@ -727,7 +829,7 @@ jobs:
                           f.write("\nRetiradas (sem áudio em " + str(MAX_FAILS) + " buscas seguidas): " + ", ".join(s["name"] for s in removed) + "\n")
                       if not ok_search:
                           f.write("\nO diretório Radio Browser não respondeu; nova tentativa em 3 horas.\n")
-                      f.write("\nSó entram rádios da StreamTheWorld (as que tocam na rede da empresa) que responderam com áudio a partir do GitHub.\n")
+                      f.write("\nNas abas normais só entram rádios da StreamTheWorld (as que tocam na rede da empresa); em \"Fora da empresa\", rádios de outros servidores (https). Todas responderam com áudio a partir do GitHub.\n")
               return 0
 
           def set_output(changed):
@@ -754,10 +856,12 @@ jobs:
           AZURE_SPEECH_KEY: ${{ secrets.AZURE_SPEECH_KEY }}
           AZURE_SPEECH_REGION: ${{ secrets.AZURE_SPEECH_REGION }}
           ANDRA_VOZ: ${{ vars.ANDRA_VOZ }}
+          ANDRA_VOZ_EN: ${{ vars.ANDRA_VOZ_EN }}
+          ANDRA_VOZ_ES: ${{ vars.ANDRA_VOZ_ES }}
         run: |
           if [ -z "$AZURE_SPEECH_KEY" ]; then pip install --quiet --disable-pip-version-check "edge-tts>=6.1,<8"; fi
           cat > /tmp/voz.py <<'SCRIPT'
-          import asyncio, hashlib, html, json, os, re, shutil, sys, time, urllib.request
+          import asyncio, hashlib, html, json, os, re, shutil, subprocess, sys, time, urllib.request
           from pathlib import Path
 
           CACHE = Path(os.path.expanduser("~/.cache/cyberwave-voz")); CACHE.mkdir(parents=True, exist_ok=True)
@@ -768,6 +872,29 @@ jobs:
           VOICES = [v.strip() for v in (os.environ.get("ANDRA_VOZ") or "pt-BR-ThalitaMultilingualNeural,pt-BR-FranciscaNeural").split(",") if v.strip()]
           RATE = "+4%"
           MAX_NEWS = 40
+          # Idioma de cada trecho (identificado pelo mesmo código do site, bloco andra-idioma do index.html): nomes de
+          # músicas e rádios, manchetes em inglês etc. são gravados na voz daquele idioma e juntados num MP3 só.
+          # Trocar a voz de um idioma: variáveis ANDRA_VOZ_EN e ANDRA_VOZ_ES (a primeira da lista que funcionar).
+          LANG_VOICES = {
+              "en": os.environ.get("ANDRA_VOZ_EN") or "en-US-AvaNeural,en-US-JennyNeural,en-US-AriaNeural",
+              "es": os.environ.get("ANDRA_VOZ_ES") or "es-MX-DaliaNeural,es-US-PalomaNeural,es-ES-ElviraNeural",
+              "fr": "fr-FR-DeniseNeural,fr-FR-EloiseNeural", "it": "it-IT-ElsaNeural,it-IT-IsabellaNeural",
+              "de": "de-DE-KatjaNeural,de-DE-AmalaNeural", "ja": "ja-JP-NanamiNeural", "ko": "ko-KR-SunHiNeural",
+              "zh": "zh-CN-XiaoxiaoNeural", "ru": "ru-RU-SvetlanaNeural", "ar": "ar-SA-ZariyahNeural", "he": "he-IL-HilaNeural",
+              "el": "el-GR-AthinaNeural", "hi": "hi-IN-SwaraNeural", "th": "th-TH-PremwadeeNeural",
+          }
+          LOCALES = {"pt": "pt-BR", "en": "en-US", "es": "es-MX", "fr": "fr-FR", "it": "it-IT", "de": "de-DE", "ja": "ja-JP", "ko": "ko-KR",
+                     "zh": "zh-CN", "ru": "ru-RU", "ar": "ar-SA", "he": "he-IL", "el": "el-GR", "hi": "hi-IN", "th": "th-TH"}
+          LANG_NAME = {"pt": "português", "en": "inglês", "es": "espanhol", "fr": "francês", "it": "italiano", "de": "alemão", "ja": "japonês",
+                       "ko": "coreano", "zh": "chinês", "ru": "russo", "ar": "árabe", "he": "hebraico", "el": "grego", "hi": "hindi", "th": "tailandês"}
+          PLANS = {}       # texto -> [(idioma, trecho), ...] (só textos com trecho fora do português)
+          LANG_VOICE = {}  # idioma -> voz que respondeu
+          RUNNER = '''
+          import { readFileSync, writeFileSync } from "node:fs";
+          const { speechPlan } = await import(process.argv[2]);
+          const texts = JSON.parse(readFileSync(process.argv[3], "utf8"));
+          writeFileSync(process.argv[4], JSON.stringify(texts.map((t) => speechPlan(t).map((r) => [r.lang, r.text]))));
+          '''
 
           def lead(it):
               if it.get("source") == "ancapsu": return "No canal Ancapsu"
@@ -784,14 +911,64 @@ jobs:
               h = hashlib.sha1(f"{ENGINE}|{voice}|{RATE}|{say(text)}".encode()).hexdigest()[:20]
               return h + ".mp3"
 
+          def load_plans(page, texts):
+              """Divide cada texto em trechos por idioma com o código do site (src/lib/andra-lang.ts), via Node."""
+              m = re.search(r'<script type="application/json" id="andra-idioma">(.*?)</script>', page, re.S)
+              if not m:
+                  print("::warning title=Voz::index.html sem o bloco andra-idioma (index.html antigo?): falas gravadas só em português")
+                  return
+              try:
+                  Path("/tmp/andra-idioma.mjs").write_text(json.loads(m.group(1)), encoding="utf-8")
+                  Path("/tmp/idioma-run.mjs").write_text(RUNNER, encoding="utf-8")
+                  Path("/tmp/idioma-in.json").write_text(json.dumps(texts, ensure_ascii=False), encoding="utf-8")
+                  subprocess.run(["node", "/tmp/idioma-run.mjs", "file:///tmp/andra-idioma.mjs", "/tmp/idioma-in.json", "/tmp/idioma-out.json"],
+                                 check=True, timeout=120, capture_output=True, text=True)
+                  out = json.loads(Path("/tmp/idioma-out.json").read_text(encoding="utf-8"))
+                  for text, plan in zip(texts, out):
+                      plan = [(l, t) for l, t in plan if l in LOCALES and t.strip()]
+                      if len(plan) > 1 or (plan and plan[0][0] != "pt"): PLANS[text] = plan
+              except subprocess.CalledProcessError as e:
+                  why = " ".join((e.stderr or str(e)).split())[:200]
+                  print(f"::warning title=Voz::identificador de idioma falhou ({why}): falas gravadas só em português")
+                  PLANS.clear()
+              except Exception as e:
+                  print(f"::warning title=Voz::identificador de idioma falhou ({' '.join(str(e).split())[:200]}): falas gravadas só em português")
+                  PLANS.clear()
+
+          def parts_of(plan, voice):
+              """Partes da gravação: [(voz, texto, sotaque para <lang> ou None)], juntando trechos seguidos da mesma voz."""
+              multi = ENGINE == "azure" and "Multilingual" in voice
+              parts = []
+              for lang, text in plan:
+                  if lang == "pt": parts.append((voice, say(text), None))
+                  # Azure com voz Multilingual: a mesma voz troca de idioma (<lang>), sem mudar o timbre.
+                  elif multi: parts.append((voice, text.strip(), LOCALES[lang]))
+                  elif LANG_VOICE.get(lang): parts.append((LANG_VOICE[lang], text.strip(), None))
+                  # Sem voz do idioma: voz em português com o vocabulário de pronúncia (como antes).
+                  else: parts.append((voice, say(text), None))
+              merged = []
+              for p in parts:
+                  if merged and merged[-1][0] == p[0] and merged[-1][2] == p[2]:
+                      merged[-1] = (p[0], merged[-1][1].rstrip() + " " + p[1].lstrip(), p[2])
+                  else:
+                      merged.append(p)
+              return [p for p in merged if p[1].strip()]
+
+          def file_for_parts(voice, parts):
+              h = hashlib.sha1(f"{ENGINE}|{voice}|{RATE}|{json.dumps(parts, ensure_ascii=False)}".encode()).hexdigest()[:20]
+              return h + ".mp3"
+
           def azure(text, voice, path):
               body = html.escape(say(text))
               # Manchete em inglês: vozes "Multilingual" leem o trecho original com pronúncia americana.
               if "Multilingual" in voice and ", em inglês: " in text:
                   head, tail = text.split(", em inglês: ", 1)
                   body = html.escape(say(head) + ", em inglês: ") + "<lang xml:lang='en-US'>" + html.escape(tail) + "</lang>"
-              ssml = (f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='pt-BR'>"
-                      f"<voice name='{voice}'><prosody rate='{RATE}'>{body}</prosody></voice></speak>")
+              azure_post(f"<voice name='{voice}'><prosody rate='{RATE}'>{body}</prosody></voice>", path)
+
+          def azure_post(voices_xml, path):
+              ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='pt-BR'>"
+                      + voices_xml + "</speak>")
               req = urllib.request.Request(
                   f"https://{REGION}.tts.speech.microsoft.com/cognitiveservices/v1", data=ssml.encode("utf-8"), method="POST",
                   headers={"Ocp-Apim-Subscription-Key": KEY, "Content-Type": "application/ssml+xml",
@@ -812,8 +989,29 @@ jobs:
               if ENGINE == "azure": await asyncio.to_thread(azure, text, voice, path)
               else: await edge(text, voice, path)
 
+          async def synth_parts(parts, path):
+              """Fala com trechos em mais de um idioma: Azure num pedido só (várias vozes); edge-tts parte por parte, juntando os MP3."""
+              if ENGINE == "azure":
+                  xml = ""
+                  for v, text, tag in parts:
+                      body = html.escape(text)
+                      if tag: body = f"<lang xml:lang='{tag}'>{body}</lang>"
+                      xml += f"<voice name='{v}'><prosody rate='{RATE}'>{body}</prosody></voice>"
+                  await asyncio.to_thread(azure_post, xml, path)
+                  return
+              import edge_tts
+              data = b""
+              for i, (v, text, _tag) in enumerate(parts):
+                  tmp = path.with_suffix(f".{i}.tmp")
+                  await asyncio.wait_for(edge_tts.Communicate(text, v, rate=RATE).save(str(tmp)), 60)
+                  if tmp.stat().st_size < 300: raise RuntimeError(f"áudio vazio ({v})")
+                  data += tmp.read_bytes()
+                  tmp.unlink()
+              path.write_bytes(data)
+
           async def main():
-              m = re.search(r'<script type="application/json" id="andra-frases">(.*?)</script>', Path("index.html").read_text(encoding="utf-8"), re.S)
+              page = Path("index.html").read_text(encoding="utf-8")
+              m = re.search(r'<script type="application/json" id="andra-frases">(.*?)</script>', page, re.S)
               phrases = json.loads(m.group(1)) if m else {}
               # Rádios descobertas (radios-extras.json, passo anterior): a apresentadora anuncia cada uma com a mesma voz.
               try:
@@ -822,7 +1020,7 @@ jobs:
                           phrases["radio-" + s["id"]] = s["fala"]
               except Exception:
                   pass
-              lx = re.search(r'<script type="application/json" id="andra-lexico">(.*?)</script>', Path("index.html").read_text(encoding="utf-8"), re.S)
+              lx = re.search(r'<script type="application/json" id="andra-lexico">(.*?)</script>', page, re.S)
               if lx:
                   for p, rep in json.loads(lx.group(1)):
                       try: LEX.append((re.compile(p, re.I), rep))
@@ -835,6 +1033,8 @@ jobs:
               for it in items:
                   it.pop("audio", None)
                   it["speech"] = lead(it) + ": " + it["title"]
+
+              load_plans(page, list(dict.fromkeys([*phrases.values(), *(it["speech"] for it in items[:MAX_NEWS])])))
 
               # Escolhe a voz: a primeira da lista que funcionar.
               voice = None
@@ -849,13 +1049,31 @@ jobs:
                   print("::warning title=Voz::Nenhuma voz neural respondeu; o site vai usar a voz do navegador.")
                   return 1
 
-              texts = {}
-              for pid, text in phrases.items(): texts[text] = file_for(voice, text)
-              for it in items[:MAX_NEWS]: texts[it["speech"]] = file_for(voice, it["speech"])
+              # Vozes dos outros idiomas que aparecem nos textos (com Azure e voz Multilingual, a própria voz troca de idioma).
+              multi = ENGINE == "azure" and "Multilingual" in voice
+              needed = sorted({l for plan in PLANS.values() for l, _ in plan if l != "pt"})
+              for lang in ([] if multi else needed):
+                  for v in [x.strip() for x in LANG_VOICES.get(lang, "").split(",") if x.strip()]:
+                      probe = CACHE / file_for(v, "Cyberwave Radio.")
+                      try:
+                          if not probe.exists(): await synth("Cyberwave Radio.", v, probe)
+                          LANG_VOICE[lang] = v; break
+                      except Exception as e:
+                          print(f"Voz {v} ({LANG_NAME.get(lang, lang)}) indisponível: {str(e)[:120]}")
+                  else:
+                      print(f"Sem voz em {LANG_NAME.get(lang, lang)}: esses trechos ficam na voz em português.")
+
+              texts = {}   # texto -> (arquivo, partes ou None)
+              def job(text):
+                  parts = parts_of(PLANS[text], voice) if text in PLANS else None
+                  if parts and all(v == voice and not tag for v, _, tag in parts): parts = None
+                  texts[text] = (file_for_parts(voice, parts) if parts else file_for(voice, text), parts)
+              for pid, text in phrases.items(): job(text)
+              for it in items[:MAX_NEWS]: job(it["speech"])
 
               sem = asyncio.Semaphore(4)
               made = failed = 0
-              async def one(text, name):
+              async def one(text, name, parts):
                   nonlocal made, failed
                   path = CACHE / name
                   if path.exists():
@@ -863,35 +1081,43 @@ jobs:
                   async with sem:
                       for attempt in range(2):
                           try:
-                              await synth(text, voice, path); made += 1; return
+                              if parts: await synth_parts(parts, path)
+                              else: await synth(text, voice, path)
+                              made += 1; return
                           except Exception as e:
                               err = str(e)[:120]
                               await asyncio.sleep(1.5)
                       failed += 1
                       print(f"falhou: {text[:60]}… ({err})")
-              await asyncio.gather(*(one(t, n) for t, n in texts.items()))
+              await asyncio.gather(*(one(t, n, p) for t, (n, p) in texts.items()))
 
               ready = lambda name: (CACHE / name).exists()
               out_phrases = {}
               for pid, text in phrases.items():
-                  name = texts[text]
+                  name = texts[text][0]
                   if ready(name):
                       shutil.copyfile(CACHE / name, OUT / name); out_phrases[pid] = "voz/" + name
               for it in items[:MAX_NEWS]:
-                  name = texts[it["speech"]]
+                  name = texts[it["speech"]][0]
                   if ready(name):
                       shutil.copyfile(CACHE / name, OUT / name); it["audio"] = "voz/" + name
               news_path.write_text(json.dumps(news, ensure_ascii=False, indent=1), encoding="utf-8")
-              (OUT / "manifest.json").write_text(json.dumps({"updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "engine": ENGINE, "voice": voice, "phrases": out_phrases}, ensure_ascii=False), encoding="utf-8")
+              used = sorted({l for t, (n, p) in texts.items() if p for l, _ in PLANS.get(t, []) if l != "pt" and (multi or LANG_VOICE.get(l))})
+              voices = {"pt": voice, **{l: (voice if multi else LANG_VOICE[l]) for l in used}}
+              mixed = sum(1 for n, p in texts.values() if p)
+              (OUT / "manifest.json").write_text(json.dumps({"updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "engine": ENGINE, "voice": voice, "voices": voices, "mixed": mixed, "phrases": out_phrases}, ensure_ascii=False), encoding="utf-8")
 
               # Limpa áudios sem uso há mais de 3 dias.
               for f in CACHE.glob("*.mp3"):
                   if time.time() - f.stat().st_mtime > 3 * 86400: f.unlink(missing_ok=True)
 
               print(f"Voz {voice} ({ENGINE}): {made} gravados agora, {failed} falharam, {len(out_phrases)} falas fixas e {sum(1 for i in items if i.get('audio'))} manchetes com áudio.")
+              langs_txt = ", ".join(f"{LANG_NAME.get(l, l)} {v}" for l, v in voices.items() if l != "pt") or "nenhum trecho em outro idioma"
+              print(f"Idiomas: {mixed} falas com trecho em outro idioma; vozes: {langs_txt}.")
               if os.environ.get("GITHUB_STEP_SUMMARY"):
                   with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
                       s.write(f"\n### Voz da ANDRA-18\n\nVoz **{voice}** ({'Azure AI Speech' if ENGINE == 'azure' else 'edge-tts'}): {len(out_phrases)} falas fixas, {sum(1 for i in items if i.get('audio'))} manchetes com áudio, {made} gravados nesta execução, {failed} falhas.\n")
+                      s.write(f"\nIdiomas: {mixed} falas com trecho em outro idioma (cada trecho na voz do seu idioma); vozes: {langs_txt}.\n")
               return 0
 
           sys.exit(asyncio.run(main()))
@@ -953,6 +1179,7 @@ jobs:
                   with urllib.request.urlopen(req, timeout=12) as r:
                       ct = r.headers.get("Content-Type", "")
                       final = r.geturl()
+                      if not str(final).startswith("https://"): return False, "redireciona para http (o site bloqueia)", final
                       if PLAYLIST_CT.search(ct) and depth == 0:
                           text = r.read(65536).decode("utf-8", "replace")
                           links = re.findall(r"https?://[^\s\"'<>]+", text)
@@ -995,6 +1222,52 @@ jobs:
                   if u.startswith("https://") and u not in out: out.append(u)
               return out[:4]
 
+          # ---- v34: endereço do áudio achado na página da própria rádio (rádios pedidas que não estão no diretório) ----
+          BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0 Safari/537.36"
+          URL_IN = re.compile(r"https?:(?:\\?/){2}[A-Za-z0-9.-]+(?::\d{2,5})?(?:\\?/[^\s\"'<>`()\[\]{}|\\^]*)?")
+          STREAMISH = re.compile(r"\.(mp3|aac|aacp|ogg|opus)(\?|$)|/(stream|live|listen|autodj|radio)(/|\?|$|\.)|/;|icecast|shoutcast|radio\.co/|zeno\.fm/|live365\.com/|"
+                                 r"streamguys|securenetsystems|radiojar|radioking|mixlr|azuracast|caster\.fm|streamon\.fm|//(ice|stream|live|radio|audio|listen)[0-9-]*\.|:\d{4,5}/", re.I)
+          NOT_STREAM = re.compile(r"\.(png|jpe?g|gif|svg|webp|ico|css|js|mjs|json|woff2?|ttf|html?|php|xml|txt|pdf)(\?|$)|google|gstatic|facebook|fbcdn|twitter|//x\.com|instagram|"
+                                  r"youtube|youtu\.be|apple\.com|spotify|tiktok|linktr\.ee|cloudflare|jsdelivr|unpkg|fonts\.|wp-json|schema\.org|w3\.org|gravatar|paypal|cash\.app|"
+                                  r"streema|tunein|radio\.net|onlineradiobox|mytuner|radio-browser", re.I)
+          PLAYER_HOSTS = re.compile(r"live365|radio\.co|zeno|streamguys|securenet|radiojar|radioking|mixlr|azuracast|caster|shoutcast|icecast|stream", re.I)
+
+          def page_text(url, limit=2_000_000):
+              req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA, "Accept": "text/html,application/javascript,*/*"})
+              with urllib.request.urlopen(req, timeout=12) as r:
+                  ct = (r.headers.get("Content-Type") or "").lower()
+                  if ct and not re.search(r"html|javascript|json|text/plain|ecmascript", ct): return "", r.geturl()
+                  return r.read(limit).decode("utf-8", "replace"), r.geturl()
+
+          def known_platform(u):
+              """Página de player conhecida -> endereço do áudio (ex.: Live365)."""
+              m = re.match(r"https?://(?:player\.|www\.)?live365\.com/(?:station/|embeds/v\d/player/)?(a\d{4,6})\b", u)
+              return f"https://streaming.live365.com/{m.group(1)}" if m else None
+
+          def site_streams(sites):
+              """Endereços de áudio citados na página da rádio (e nos scripts/players que ela carrega). Só https."""
+              found = []
+              for site in (sites or [])[:2]:
+                  try: html, final = page_text(site)
+                  except Exception: continue
+                  texts, home = [html], urllib.parse.urlsplit(final).hostname or ""
+                  for src in re.findall(r"<(?:script|iframe)[^>]+src=[\"']([^\"']+)[\"']", html, re.I)[:20]:
+                      full = urllib.parse.urljoin(final, src)
+                      host = urllib.parse.urlsplit(full).hostname or ""
+                      if host != home and not PLAYER_HOSTS.search(host): continue
+                      try: texts.append(page_text(full)[0])
+                      except Exception: pass
+                      if len(texts) >= 8: break
+                  for t in texts:
+                      for raw in URL_IN.findall(t):
+                          u = raw.replace("\\/", "/").rstrip(".,;")
+                          known = known_platform(u)
+                          if known: u = known
+                          elif NOT_STREAM.search(u.split("?")[0]) or not STREAMISH.search(u): continue
+                          if u.startswith("http://"): u = "https://" + u[7:]
+                          if u not in found: found.append(u)
+              return found[:15]
+
           def triton_reason(urls):
               """Rádio da StreamTheWorld que não respondeu: o código da Triton diz por quê (404 = não existe; 453 = bloqueada)."""
               for u in urls:
@@ -1020,6 +1293,10 @@ jobs:
                   if u in st["urls"]: continue
                   ok, why, final = probe(u)
                   if ok: return {"ok": True, "url": u, "err": None, "via": "radio-browser"}
+              for u in site_streams(st.get("sites")):
+                  if u in st["urls"]: continue
+                  ok, why, final = probe(u)
+                  if ok: return {"ok": True, "url": u, "err": None, "via": "site"}
               err = tried[0] if tried else "sem endereço"
               why = triton_reason(st["urls"] + st.get("triton", []))
               return {"ok": False, "url": None, "err": f"{err}; {why}" if why else err}
@@ -1034,7 +1311,7 @@ jobs:
               try:
                   known = {s["id"] for s in stations}
                   for s in json.loads(Path("radios-extras.json").read_text(encoding="utf-8")).get("stations", []):
-                      if s.get("id") not in known and str(s.get("url", "")).startswith("https://playerservices.streamtheworld.com/"):
+                      if s.get("id") not in known and str(s.get("url", "")).startswith("https://"):
                           stations.append({"id": s["id"], "name": s.get("name") or s["id"], "urls": [s["url"]]})
               except Exception:
                   pass
@@ -1141,9 +1418,12 @@ jobs:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
           PODCASTS_A_CADA_HORAS: ${{ vars.PODCASTS_A_CADA_HORAS }}
           PODCASTS_EPISODIOS: ${{ vars.PODCASTS_EPISODIOS }}
+          PODCASTS_AUTO_POR_ABA: ${{ vars.PODCASTS_AUTO_POR_ABA }}
+          AUDIOLIVROS_AUTO_POR_ABA: ${{ vars.AUDIOLIVROS_AUTO_POR_ABA }}
+          PODCASTS_SERVIDORES_AVD: ${{ vars.PODCASTS_SERVIDORES_AVD }}
         run: |
           cat > /tmp/podcasts.py <<'SCRIPT'
-          import gzip, json, os, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
+          import gzip, hashlib, json, os, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
           from concurrent.futures import ThreadPoolExecutor
           from pathlib import Path
 
@@ -1193,7 +1473,7 @@ jobs:
               html = Path("index.html").read_text(encoding="utf-8")
               m = re.search(r'<script type="application/json" id="podcasts-lista">(.*?)</script>', html, re.S)
               if not m: return None
-              return [d for d in json.loads(m.group(1)) if isinstance(d, dict) and d.get("id") and d.get("term") and d.get("match")]
+              return [d for d in json.loads(m.group(1)) if isinstance(d, dict) and d.get("id") and (isinstance(d.get("cid"), int) or (d.get("term") and d.get("match")))]
 
           def load_state():
               try: return json.loads(STATE.read_text(encoding="utf-8"))
@@ -1207,8 +1487,22 @@ jobs:
                   if e.code in (403, 429): raise RateLimited(str(e.code))
                   raise
 
+          def lookup(params, country):
+              """Consulta pelo código; se a loja do país não tiver o programa, tenta a loja dos EUA."""
+              for c in dict.fromkeys([country, "US"]):
+                  res = itunes("https://itunes.apple.com/lookup?" + urllib.parse.urlencode({**params, "country": c})).get("results", [])
+                  if res: return res, c
+              return [], country
+
           def resolve(d):
               country = d.get("country") or "BR"
+              if isinstance(d.get("cid"), int):
+                  # Audiolivros (v31): programa já conhecido pelo código do Apple Podcasts.
+                  res, _ = lookup({"id": d["cid"], "media": "podcast", "entity": "podcast"}, country)
+                  r = next((r for r in res if r.get("collectionId") == d["cid"]), None)
+                  if not r: return None
+                  return {"collectionId": d["cid"], "name": r.get("collectionName", ""), "artist": r.get("artistName", ""),
+                          "art": r.get("artworkUrl600") or r.get("artworkUrl100") or "", "link": r.get("collectionViewUrl", ""), "resolvedAt": NOW}
               q = urllib.parse.urlencode({"media": "podcast", "entity": "podcast", "limit": 15, "country": country, "term": d["term"]})
               for r in itunes(f"https://itunes.apple.com/search?{q}").get("results", []):
                   if isinstance(r.get("collectionId"), int) and matches(d, r.get("collectionName", ""), r.get("artistName", "")):
@@ -1219,18 +1513,127 @@ jobs:
           def clean(s, n):
               return re.sub(r"[\x00-\x1f<>]", " ", str(s or "")).strip()[:n]
 
-          def episodes(info, country):
-              q = urllib.parse.urlencode({"id": info["collectionId"], "media": "podcast", "entity": "podcastEpisode", "limit": EPISODES, "country": country})
+          def natural(s):
+              return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", fold(s))]
+
+          def episodes(info, country, book=False):
+              res, _ = lookup({"id": info["collectionId"], "media": "podcast", "entity": "podcastEpisode", "limit": 200 if book else EPISODES}, country)
               eps = []
-              for r in itunes(f"https://itunes.apple.com/lookup?{q}").get("results", []):
+              for r in res:
                   if r.get("wrapperType") != "podcastEpisode": continue
                   url = str(r.get("episodeUrl") or "")
                   if not re.match(r"^https?://", url): continue
                   eps.append({"id": str(r.get("trackId") or url)[:80], "title": clean(r.get("trackName"), 200), "date": clean(r.get("releaseDate"), 40),
-                              "dur": round((r.get("trackTimeMillis") or 0) / 1000), "url": re.sub(r"^http://", "https://", url),
-                              "desc": clean(r.get("shortDescription") or r.get("description"), 400)})
-              eps.sort(key=lambda e: e["date"], reverse=True)
+                              "dur": round((r.get("trackTimeMillis") or 0) / 1000), "url": re.sub(r"^http://", "https://", url)})   # v34: sem descrição (o site não usa; arquivo menor)
+              if book:  # audiolivro: do 1º capítulo ao último (empate de data: pela numeração do título)
+                  eps.sort(key=lambda e: (e["date"], natural(e["title"])))
+              else:
+                  eps.sort(key=lambda e: e["date"], reverse=True)
               return eps
+
+          # v33/v34: podcasts e audiolivros descobertos automaticamente. Só entram programas cujo áudio fica num servidor que
+          # toca na rede da empresa (AVD). Hoje é o do Spotify for Creators (antigo anchor.fm), d3ctxlq1ktw2nl.cloudfront.net:
+          # o único servidor de podcasts/audiolivros que tocou no teste da AVD (23/11/2026); Redcircle, Castbox, Megaphone e
+          # Podtrac foram bloqueados. Outros servidores: variável PODCASTS_SERVIDORES_AVD (separados por vírgula).
+          AVD_HOSTS = [h.strip().lower() for h in (os.environ.get("PODCASTS_SERVIDORES_AVD") or "d3ctxlq1ktw2nl.cloudfront.net").split(",") if h.strip()]
+          AUTO_MAX = int(num("AUDIOLIVROS_AUTO_POR_ABA", 15, 0, 40))      # audiolivros por aba (Em português, Outros idiomas)
+          AUTO_POD_MAX = int(num("PODCASTS_AUTO_POR_ABA", 8, 0, 30))      # podcasts por aba (Notícias, Humor, Ciência, Histórias, Esportes)
+          AUTO_DAYS = 7          # refaz a busca a cada 7 dias (ou na hora, se a lista de buscas mudar)
+          AUTO_REFRESH_H = 24    # episódios dos descobertos: 1 vez por dia (os da lista fixa: a cada 6 h)
+          BOOK_TABS = ("livros-pt", "livros-outros")
+          DISCOVER = [
+              # Audiolivros: (busca, loja, aba, idioma)
+              ("audiolivro completo", "BR", "livros-pt", "pt"), ("audiolivro", "BR", "livros-pt", "pt"), ("audiobook em português", "BR", "livros-pt", "pt"),
+              ("audiobook completo", "BR", "livros-pt", "pt"), ("livro narrado", "BR", "livros-pt", "pt"), ("contos narrados", "BR", "livros-pt", "pt"),
+              ("literatura brasileira em áudio", "BR", "livros-pt", "pt"), ("machado de assis audiolivro", "BR", "livros-pt", "pt"),
+              ("audiolibro completo", "US", "livros-outros", "es"), ("audiolibros", "US", "livros-outros", "es"), ("cuentos narrados", "US", "livros-outros", "es"),
+              ("full audiobook", "US", "livros-outros", "en"), ("librivox audiobook", "US", "livros-outros", "en"), ("public domain audiobook", "US", "livros-outros", "en"),
+              ("classic audiobook", "US", "livros-outros", "en"), ("short stories audiobook", "US", "livros-outros", "en"),
+              # Podcasts em português (v34)
+              ("notícias", "BR", "noticias", "pt"), ("política", "BR", "noticias", "pt"), ("jornalismo", "BR", "noticias", "pt"), ("economia", "BR", "noticias", "pt"),
+              ("humor", "BR", "humor", "pt"), ("entrevistas", "BR", "humor", "pt"), ("bate papo", "BR", "humor", "pt"), ("comédia", "BR", "humor", "pt"),
+              ("ciência", "BR", "ciencia", "pt"), ("tecnologia", "BR", "ciencia", "pt"), ("divulgação científica", "BR", "ciencia", "pt"), ("programação", "BR", "ciencia", "pt"),
+              ("true crime", "BR", "historias", "pt"), ("crimes reais", "BR", "historias", "pt"), ("histórias de terror", "BR", "historias", "pt"), ("história do brasil", "BR", "historias", "pt"),
+              ("futebol", "BR", "esportes", "pt"), ("esportes", "BR", "esportes", "pt"), ("nba", "BR", "esportes", "pt"), ("fórmula 1", "BR", "esportes", "pt"),
+          ]
+          CFG = hashlib.sha1(json.dumps([DISCOVER, AVD_HOSTS, AUTO_MAX, AUTO_POD_MAX]).encode()).hexdigest()[:12]
+          BOOKISH = re.compile(r"\b(audio ?livros?|audio ?books?|audio ?libros?|livros? narrados?|livros? em audio|contos? narrados?|cuentos? narrados?|librivox)\b")
+          ANCHOR_FEED = re.compile(r"^https?://(www\.)?anchor\.fm/s/[0-9a-f]+/podcast/rss", re.I)
+          RELIG = re.compile(r"\b(biblia|bible|biblical|jesus|cristo|christ|christian|crista|cristao|igreja|church|evangel\w*|gospel|sermao|sermon|pregacao|preaching|"
+                             r"louvor|worship|oracao|prayer|devocional|devotional|catolic\w*|catholic|espirita|espiritismo|umbanda|candomble|islam\w*|quran|torah|"
+                             r"rosario|terco|pastor|padre|apostolo|salmos?|psalms?)\b")
+          RELIG_GENRE = re.compile(r"relig|spiritual|espiritual|christian|cristianismo|judaism|juda[ií]smo|islam|hindu|buddh|budismo", re.I)
+          CLIPS = re.compile(r"\b(cortes?|clips?|melhores momentos)\b")
+          EN_WORDS = re.compile(r"\b(the|and|of|with|your|my|our|show|daily|weekly|talk|life|world|stories|story|true|podcast network)\b")
+          PT_WORDS = re.compile(r"\b(de|do|da|dos|das|com|e|na|no|nas|nos|para|um|uma|que|os|as|sobre|papo|brasil|historias?|noticias|futebol|ciencia|tecnologia|"
+                                r"humor|crimes?|resenha|conversa|politica|economia|esportes?|misterios?|terror|casos?)\b")
+
+          def looks_pt(name, artist):
+              raw = f"{name} {artist}"
+              if re.search(r"[ãõçáéíóúâêôà]", raw.lower()): return True
+              f = fold(raw)
+              return len(PT_WORDS.findall(f)) >= len(EN_WORDS.findall(f))
+
+          def parse_date(s):
+              try: return time.mktime(time.strptime(str(s)[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+              except Exception: return 0.0
+
+          def avd_host(e):
+              u = e.get("direct") or unwrap(e.get("url") or "") or e.get("url") or ""
+              return (urllib.parse.urlsplit(u).hostname or "").lower()
+
+          # Serviços de estatística que ficam na frente do áudio (mesma lista do site, src/lib/podcasts.ts).
+          PREFIXES = [re.compile(p, re.I) for p in (
+              r"^https?://(?:www\.)?dts\.podtrac\.com/redirect\.[a-z0-9]+/", r"^https?://(?:www\.)?podtrac\.com/pts/redirect\.[a-z0-9]+/",
+              r"^https?://(?:chrt\.fm|chtbl\.com)/track/[^/]+/", r"^https?://pdst\.fm/e/", r"^https?://op3\.dev/e/(?:[^/]*,[^/]*/)?",
+              r"^https?://(?:pscrb\.fm|verifi\.podscribe\.com)/rss/p/", r"^https?://mgln\.ai/e/[^/]+/", r"^https?://arttrk\.com/p/[^/]+/",
+              r"^https?://clrtpod\.com/m/", r"^https?://prfx\.byspotify\.com/e/", r"^https?://pfx\.vpixl\.com/[^/]+/",
+              r"^https?://(?:www\.)?podtrac\.com/[^/]+/redirect\.[a-z0-9]+/", r"^https?://tracking\.swap\.fm/track/[^/]+/", r"^https?://growx\.podkite\.com/[^/]+/[^/]+/")]
+
+          def unwrap(url):
+              """Tira os serviços de estatística da frente e abre o anchor.fm/.../https%3A%2F%2F... -> endereço do arquivo.
+              None se não houver nada para tirar."""
+              u = url or ""
+              for _ in range(6):
+                  m = re.match(r"^https?://(?:www\.)?anchor\.fm/.*?/(https?%3A%2F%2F.+)$", u, re.I)
+                  if m:
+                      u = urllib.parse.unquote(m.group(1)); continue
+                  rx = next((r for r in PREFIXES if r.match(u)), None)
+                  if not rx: break
+                  rest = rx.sub("", u, count=1)
+                  u = rest if re.match(r"^https?://", rest, re.I) else "https://" + rest
+              u = re.sub(r"^http://", "https://", u)
+              return u if u != re.sub(r"^http://", "https://", url or "") else None
+
+          def discover(known, curated):
+              """Procura no catálogo da Apple podcasts e audiolivros hospedados no anchor (toca na AVD); devolve definições novas por aba."""
+              found, per_tab = [], {}
+              cap = lambda tab: AUTO_MAX if tab in BOOK_TABS else AUTO_POD_MAX
+              for term, country, tab, lang in DISCOVER:
+                  if per_tab.get(tab, 0) >= cap(tab): continue
+                  q = urllib.parse.urlencode({"media": "podcast", "entity": "podcast", "limit": 50, "country": country, "term": term})
+                  res = itunes(f"https://itunes.apple.com/search?{q}").get("results", []); time.sleep(GAP_S)
+                  book = tab in BOOK_TABS
+                  for r in res:
+                      cid = r.get("collectionId")
+                      if not isinstance(cid, int) or cid in known or per_tab.get(tab, 0) >= cap(tab): continue
+                      if not ANCHOR_FEED.match(str(r.get("feedUrl") or "")): continue
+                      name, artist = str(r.get("collectionName") or ""), str(r.get("artistName") or "")
+                      genres = " ".join([str(r.get("primaryGenreName") or "")] + [str(g) for g in (r.get("genres") or [])])
+                      n = fold(name)
+                      if len(n) < 3 or RELIG.search(fold(f"{name} {artist}")) or RELIG_GENRE.search(genres): continue
+                      if book:
+                          if not BOOKISH.search(n) or (r.get("trackCount") or 0) < 2: continue
+                      else:
+                          if BOOKISH.search(n) or CLIPS.search(n) or (r.get("trackCount") or 0) < 8: continue
+                          if NOW - parse_date(r.get("releaseDate")) > 120 * 86400: continue        # parado há mais de 4 meses
+                          if lang == "pt" and not looks_pt(name, artist): continue
+                          if any(matches(d, name, artist) for d in curated): continue                # já está na lista (ou é um canal de cortes dele)
+                      known.add(cid); per_tab[tab] = per_tab.get(tab, 0) + 1
+                      found.append({"id": f"auto-{cid}", "name": clean(name, 120), "cid": cid, "tab": tab, "lang": lang, "book": book, "country": country, "auto": True,
+                                    "info": {"collectionId": cid, "name": clean(name, 120), "artist": clean(artist, 120),
+                                             "art": r.get("artworkUrl600") or r.get("artworkUrl100") or "", "link": r.get("collectionViewUrl", ""), "resolvedAt": NOW}})
+              return found
 
           SIGNED = re.compile(r"(expires|signature|x-amz-|token|policy|key-pair|hdnts|exp=)", re.I)
           def final_url(url):
@@ -1261,17 +1664,39 @@ jobs:
                       except Exception as e:
                           print(f"sem lista anterior no site ({e})")
               due = NOW >= float(st.get("nextAt") or 0)
+              start = time.time()
+              auto = st.get("auto") or {}
+              if (AUTO_MAX or AUTO_POD_MAX) and (NOW - float(auto.get("at") or 0) > AUTO_DAYS * 86400 or auto.get("cfg") != CFG):
+                  curated_ids = {d["id"] for d in defs}
+                  known = {d["cid"] for d in defs if isinstance(d.get("cid"), int)} | {i.get("collectionId") for k, i in (st.get("resolved") or {}).items() if k in curated_ids}
+                  try:
+                      items = discover(known, [d for d in defs if d.get("match")]); auto = {"at": NOW, "cfg": CFG, "items": items}; due = True
+                      books = sum(1 for a in items if a.get("book"))
+                      print(f"descobertos no anchor (tocam na AVD): {len(items) - books} podcasts e {books} audiolivros")
+                  except Exception as e:
+                      print(f"descoberta de podcasts e audiolivros falhou ({e}); mantida a anterior, nova tentativa em 1 hora")
+                      auto = {**auto, "at": NOW - AUTO_DAYS * 86400 + 3600, "cfg": CFG}
+              auto_items = [a for a in auto.get("items", []) if isinstance(a, dict) and a.get("id")]
+              defs = defs + [a for a in auto_items if all(d["id"] != a["id"] for d in defs)]
+              # v32: podcast ou audiolivro novo na lista do site (index.html novo) = atualiza já, sem esperar as 6 h.
+              seen = set(st.get("seen") or [s.get("id") for s in prev.get("shows", []) if isinstance(s, dict)])
+              novos = [d["id"] for d in defs if d["id"] not in seen]
+              if novos and not due:
+                  print(f"podcasts: {len(novos)} itens novos na lista do site; atualizando agora"); due = True
               if not due and prev.get("shows"):
                   OUT.write_text(json.dumps(prev, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
                   print(f"podcasts: próxima atualização em {iso(float(st['nextAt']))}; republicada a lista de {prev.get('updatedAt')}")
                   out("salvar", "false"); return 0
 
               resolved = st.get("resolved") or {}
+              for a in auto_items:
+                  if a["id"] not in resolved and a.get("info"): resolved[a["id"]] = a["info"]
               prev_shows = {s.get("id"): s for s in prev.get("shows", []) if isinstance(s, dict)}
               shows, rows, pending, limited = [], [], False, False
-              start = time.time()
               for d in defs:
                   old = prev_shows.get(d["id"])
+                  if d.get("auto") and old and NOW - float(old.get("at") or 0) < AUTO_REFRESH_H * 3600:
+                      shows.append(old); rows.append(f"| {d['name']} | mantido (descoberto; episódios atualizados 1 vez por dia) |"); continue
                   if limited or time.time() - start > BUDGET_S:
                       pending = True
                       if old: shows.append(old)
@@ -1285,15 +1710,26 @@ jobs:
                               if old: shows.append(old)
                               rows.append(f"| {d['name']} | não encontrado no Apple Podcasts{' (mantido o anterior)' if old else ''} |"); continue
                           resolved[d["id"]] = info
-                      eps = episodes(info, d.get("country") or "BR"); time.sleep(GAP_S)
+                      eps = episodes(info, d.get("country") or "BR", bool(d.get("book"))); time.sleep(GAP_S)
                       if not eps:
                           if old: shows.append(old)
                           rows.append(f"| {d['name']} | sem episódios no catálogo |"); continue
                       known = {e["id"]: e.get("direct") for e in (old or {}).get("episodes", []) if isinstance(e, dict)}
                       for e in eps:
                           if known.get(e["id"]): e["direct"] = known[e["id"]]
-                      shows.append({"id": d["id"], "name": info["name"] or d["name"], "artist": info["artist"], "art": info["art"], "link": info["link"], "episodes": eps})
-                      rows.append(f"| {d['name']} | {len(eps)} episódios — último em {eps[0]['date'][:10]} |")
+                      for e in eps:   # anchor: o endereço do arquivo vem dentro do link (servidor que toca na AVD)
+                          uw = unwrap(e["url"])
+                          if not e.get("direct") and uw and (urllib.parse.urlsplit(uw).hostname or "").lower() in AVD_HOSTS: e["direct"] = uw
+                      if d.get("auto") and avd_host(eps[0]) not in AVD_HOSTS:
+                          rows.append(f"| {d['name']} | ignorado (o áudio não fica num servidor que toca na AVD) |"); continue
+                      if d.get("book") or d.get("auto"):   # audiolivro (até 200 capítulos) e descobertos: só o endereço do arquivo (podcasts.json mais leve)
+                          for e in eps:
+                              if e.get("direct"): e["url"] = e.pop("direct")
+                      show = {"id": d["id"], "name": info["name"] or d["name"], "artist": info["artist"], "art": info["art"], "link": info["link"], "episodes": eps, "at": NOW}
+                      if d.get("auto"): show.update({"tab": d["tab"], "lang": d["lang"], "book": bool(d.get("book")), "auto": True})
+                      shows.append(show)
+                      last = max(e["date"] for e in eps)[:10]
+                      rows.append(f"| {d['name']} | {len(eps)} {'capítulos (audiolivro)' if d.get('book') else 'episódios'} — último em {last} |")
                   except RateLimited:
                       limited, pending = True, True
                       if old: shows.append(old)
@@ -1302,18 +1738,19 @@ jobs:
                       if old: shows.append(old)
                       rows.append(f"| {d['name']} | falhou ({str(e)[:80]}){' — mantido o anterior' if old else ''} |")
 
-              # Endereço final do áudio dos 3 episódios mais novos (ajuda em redes que bloqueiam os serviços de estatística).
-              todo = [e for s in shows for e in s["episodes"][:3] if "direct" not in e]
+              # Endereço final do áudio dos 3 primeiros da lista: os 3 mais novos (audiolivro: os 3 primeiros capítulos) (ajuda em redes que bloqueiam os serviços de estatística).
+              todo = [e for s in shows for e in s["episodes"][:3] if "direct" not in e and avd_host(e) not in AVD_HOSTS]
               with ThreadPoolExecutor(8) as pool:
                   for e, end in zip(todo, pool.map(lambda e: final_url(e["url"]), todo)):
-                      if end: e["direct"] = end
+                      if end and end != e["url"]: e["direct"] = end
               data = {"updatedAt": iso(NOW), "shows": shows}
               OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
               next_at = NOW + (3600 if limited else 900 if pending else EVERY_H * 3600)
-              STATE.write_text(json.dumps({"data": data, "resolved": resolved, "nextAt": next_at}, ensure_ascii=False), encoding="utf-8")
+              seen_now = [d["id"] for d in defs if not pending or any(s["id"] == d["id"] for s in shows)]
+              STATE.write_text(json.dumps({"data": data, "resolved": resolved, "nextAt": next_at, "seen": seen_now, "auto": auto}, ensure_ascii=False), encoding="utf-8")
               out("salvar", "true")
               total = sum(len(s["episodes"]) for s in shows)
-              summary(f"\n### Podcasts\n\n{len(shows)} de {len(defs)} podcasts, {total} episódios. Próxima atualização: {iso(next_at)}.\n\n| Podcast | Situação |\n|---|---|\n" + "\n".join(rows) + "\n")
+              summary(f"\n### Podcasts e audiolivros\n\n{len(shows)} de {len(defs)} podcasts e audiolivros, {total} episódios. Próxima atualização: {iso(next_at)}.\n\n| Podcast | Situação |\n|---|---|\n" + "\n".join(rows) + "\n")
               if not shows: print("::warning title=Podcasts::nenhum podcast foi encontrado nesta execução")
               return 0
 
