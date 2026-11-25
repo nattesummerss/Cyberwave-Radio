@@ -2,6 +2,7 @@
  * Versão integrada ao site: a voz, as notícias e o volume da rádio são do próprio site
  * (window.CyberwaveHost, criado pelo painel CW NEWS):
  *  - voz neural feminina gravada pelo GitHub (pasta voz/), ou a voz feminina do navegador;
+ *  - idioma de cada trecho identificado na hora: nomes e títulos em inglês/espanhol/etc. na voz daquele idioma;
  *  - manchetes do arquivo noticias.json (CNN Brasil, BBC News Brasil, Fox News, Revista Oeste, Ancapsu);
  *  - a rádio abaixa sozinha enquanto ela fala.
  * O site avisa este arquivo com eventos:
@@ -51,15 +52,29 @@
     }
     return lexico.reduce((t, [re, say]) => t.replace(re, say), text);
   }
+  // Idioma de cada trecho, identificado na hora pelo site (window.CyberwaveIdioma, src/lib/andra-lang.ts):
+  // "Agora na Cyberwave:" vai para a voz em português e "Linkin Park, Numb" para uma voz feminina em inglês.
+  // Sem voz feminina naquele idioma, o trecho é lido pela voz em português com o vocabulário de pronúncia.
+  function planOf(text) {
+    const I = window.CyberwaveIdioma;
+    try { const p = I && I.plan(text); if (p && p.length) return p; } catch (e) { /* segue sem dividir */ }
+    return [{ lang: 'pt', text, say: forSpeech(text) }];
+  }
   function speakLocal(text) {
     if (!synth || !voice) { typeCaption(text); if (rig()) { rig().setTalking(true); setTimeout(() => rig().setTalking(false), text.length * 70); } return; }
-    const shown = text; text = forSpeech(text);
-    synth.cancel(); const u = new SpeechSynthesisUtterance(text);
-    u.lang = voice.lang || HOST.lang; u.rate = HOST.rate; u.pitch = HOST.pitch; u.voice = voice;
-    if (rig()) rig().bind(u, text);
-    u.onstart = () => { root.classList.add('is-talking'); typeCaption(shown); duckMusic(true); };
-    u.onend = u.onerror = () => { root.classList.remove('is-talking'); duckMusic(false); };
-    synth.speak(u);
+    const shown = text; const plan = planOf(text); const I = window.CyberwaveIdioma;
+    synth.cancel();
+    plan.forEach((run, i) => {
+      const own = run.lang === 'pt' ? voice : (I && I.voice ? I.voice(run.lang) : null);
+      const v = own || voice; const say = own ? run.say : forSpeech(run.text);
+      const u = new SpeechSynthesisUtterance(say);
+      u.lang = v.lang || HOST.lang; u.rate = HOST.rate; u.pitch = HOST.pitch; u.voice = v;
+      if (rig()) rig().bind(u, say, { cont: i > 0, last: i === plan.length - 1 });
+      if (i === 0) u.onstart = () => { root.classList.add('is-talking'); typeCaption(shown); duckMusic(true); };
+      if (i === plan.length - 1) u.onend = () => { root.classList.remove('is-talking'); duckMusic(false); };
+      u.onerror = () => { root.classList.remove('is-talking'); duckMusic(false); };
+      synth.speak(u);
+    });
   }
   function speak(text) { const s = site(); if (s) s.speak(text); else speakLocal(text); }
 
