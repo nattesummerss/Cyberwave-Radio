@@ -1,4 +1,7 @@
-/* Cyberwave Radio — ANDRA-18 anchor rig v8.1 "camada de vida" (v38)
+/* Cyberwave Radio — ANDRA-18 anchor rig v8.2 "camada de vida" (v39)
+ * v39: boca nova. Em vez de colar quadros de boca por cima da foto (deixavam um halo escuro e abriam pouco), a boca
+ *      é feita deformando os próprios lábios da foto: o lábio de baixo e o queixo descem, o de cima sobe um pouco e
+ *      aparece o interior da boca com os dentes de cima. mouth_visemes.png não é mais usado.
  * v38: começa a animar só com host.png; host_closed.png e mouth_visemes.png são opcionais (tenta de novo 1x e, se
  *      falharem, ela anima sem esses quadros). O canvas fica por cima da foto (posição absoluta), então a foto nunca
  *      sai do lugar, mesmo se algo falhar.
@@ -24,7 +27,7 @@
   const E=[{x:394,y:473,w:85,h:85,cx:436.5,cy:515.5},{x:550,y:481,w:77,h:77,cx:588.5,cy:519.5}];
   const M={x:438,y:628,w:152,h:72,cx:514,cy:660},J={x:412,y:606,w:204,h:120},P={x:414,y:598,w:200,h:126};
   // v8: região do rosto redesenhada a cada quadro, sobrancelhas, camada da cabeça e pivô (base do pescoço).
-  const FR={x:356,y:426,w:312,h:310};
+  const FR={x:356,y:426,w:312,h:336};
   const BROWS=[{cx:437,cy:476,rx:66,ry:26},{cx:586,cy:477,rx:56,ry:25}];
   const HB={x:236,y:168,w:560,h:720},HEAD={cx:514,cy:510,rx:272,ry:348},PIV={x:514,y:880};
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),lerp=(a,b,t)=>a+(b-a)*t,smooth=t=>t*t*(3-2*t),rnd=(a,b)=>a+Math.random()*(b-a);
@@ -47,7 +50,11 @@
   // [v38] imagens extras opcionais: tenta de novo uma vez (sem cache) e, se falhar, segue sem elas.
   const extra=(name)=>{const o=new Image();o.decoding='async';o.ok=false;o.tries=0;const url=(img.currentSrc||img.src).replace(/host\.png(?:\?.*)?$/,name);
     o.onload=()=>{o.ok=true;};o.onerror=()=>{if(++o.tries<2)o.src=url+'?r='+Date.now();};o.src=url;return o;};
-  const closed=extra('host_closed.png'),visemes=extra('mouth_visemes.png');
+  const closed=extra('host_closed.png');
+  // [v39] boca deformando a foto: linha entre os lábios medida em host.png (x de 444 a 580)
+  const MR={x:426,y:626,w:178,h:134},LIP=[[444,653],[452,656],[460,659],[468,661],[480,661],[496,661],[512,662],[528,662],[544,661],[556,661],[564,659],[572,656],[580,653]];
+  const lipY=x=>{if(x<=LIP[0][0])return LIP[0][1];for(let i=1;i<LIP.length;i++)if(x<=LIP[i][0]){const a=LIP[i-1],b=LIP[i],t=(x-a[0])/(b[0]-a[0]);return a[1]+(b[1]-a[1])*t;}return LIP[LIP.length-1][1];};
+  const MC=mk(MR.w,MR.h),mc=MC.getContext('2d');let MSRC=null,MOUT=null;
   const reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
   const CFG={amp:1,life:1,breathAmount:1,headShiftX:3,headShiftY:2,headRotDeg:.35,bodyShiftX:2,weightShiftX:1,followCursor:true,gestureEveryMs:[4200,7800]};
   const S={t:0,last:0,talking:false,mouth:0,target:0,
@@ -56,7 +63,7 @@
     aim:{yaw:0,pitch:0,roll:0},hp:{yaw:0,pitch:0,roll:0},hv:{yaw:0,pitch:0,roll:0},nextAim:1.2,
     brow:0,browT:0,nextIdleBrow:rnd(6,14),env:0,envSlow:0,nodCool:0,ph:[rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9)]};
   let ready=0,timeline=[],fallback=null,freq=null;
-  const loaded=()=>{if(ready)return;ready=3;{const h=HS.getContext('2d');h.drawImage(img,HB.x,HB.y,HB.w,HB.h,0,0,HB.w,HB.h);h.globalCompositeOperation='destination-in';h.drawImage(HM,0,0);
+  const loaded=()=>{if(ready)return;ready=3;{try{const t=mk(MR.w,MR.h).getContext('2d');t.drawImage(img,MR.x,MR.y,MR.w,MR.h,0,0,MR.w,MR.h);MSRC=t.getImageData(0,0,MR.w,MR.h);MOUT=mc.createImageData(MR.w,MR.h);}catch(e){MSRC=null;}const h=HS.getContext('2d');h.drawImage(img,HB.x,HB.y,HB.w,HB.h,0,0,HB.w,HB.h);h.globalCompositeOperation='destination-in';h.drawImage(HM,0,0);
     img.style.display='none';requestAnimationFrame(frame);}};
   if(img.complete&&img.naturalWidth)loaded();else img.addEventListener('load',loaded,{once:true});
   function startTalk(){S.talking=true;root.classList.add('is-talking');S.nextAim=Math.min(S.nextAim,.4);}
@@ -91,10 +98,31 @@
     S.nextAim=talk?rnd(1.2,3.2):rnd(2,6);
   }
   function drawBlink(e,k){if(k<=.01||!closed.ok)return;f.save();f.beginPath();f.ellipse(e.cx,e.cy,e.w*.53,e.h*.40,0,0,Math.PI*2);f.clip();f.globalAlpha=k;f.drawImage(closed,0,0,W,H);f.restore();}
+  // [v39] open 0..1: lábio de baixo + queixo descem até ~13 px, lábio de cima sobe até ~2,5 px, interior escuro com dentes.
   function drawMouth(open){
-    if(open<.035||!visemes.ok)return;const q=clamp(open/.78*4,0,4),a=Math.floor(q),b=Math.min(5,a+1),mix=q-a;
-    f.save();f.globalAlpha=1-mix;f.drawImage(visemes,a*P.w,0,P.w,P.h,P.x,P.y,P.w,P.h);
-    if(mix>.01){f.globalAlpha=mix;f.drawImage(visemes,b*P.w,0,P.w,P.h,P.x,P.y,P.w,P.h);}f.restore();
+    if(open<.02||!MSRC)return;
+    const D=16*open,U=3*open,src=MSRC.data,out=MOUT.data,w=MR.w,h=MR.h,bottom=h-2;
+    const smoothstep=(a,b,v)=>{const t=clamp((v-a)/(b-a),0,1);return t*t*(3-2*t);};
+    const samp=(x,y,o)=>{y=clamp(y,0,h-1);const y0=Math.floor(y),y1=Math.min(h-1,y0+1),f=y-y0,i0=(y0*w+x)*4,i1=(y1*w+x)*4;
+      out[o]=src[i0]+(src[i1]-src[i0])*f;out[o+1]=src[i0+1]+(src[i1+1]-src[i0+1])*f;out[o+2]=src[i0+2]+(src[i1+2]-src[i0+2])*f;out[o+3]=255;};
+    for(let x=0;x<w;x++){
+      const X=MR.x+x,dx=(X-512)/57;
+      const wOpen=Math.abs(dx)>=1?0:Math.pow(1-dx*dx,1.15);           // abertura: lente, fecha nos cantos
+      const wJaw=1-smoothstep(.7,1.35,Math.abs(dx));                 // queixo: mais largo e suave
+      const L=lipY(clamp(X,444,580))-MR.y,dOpen=D*wOpen,dJaw=D*Math.max(wOpen,wJaw*.85),u=U*wOpen;
+      const top=L-u,bot=L+dOpen;
+      for(let y=0;y<h;y++){const o=(y*w+x)*4;
+        if(y<top){const k=1-smoothstep(top-18,top,y);samp(x,y+u*(1-k),o);}            // lábio de cima sobe
+        else if(y>=bot){const k=y<bot+20?1:1-smoothstep(bot+20,bottom,y);samp(x,y-(dOpen+(dJaw-dOpen)*smoothstep(bot,bot+20,y))*k,o);} // lábio de baixo e queixo descem
+        else{ // interior da boca
+          const g=bot-top,t=(y-top)/Math.max(g,1e-3),edge=Math.min(1,(y-top+.5)*.8,(bot-y+.5)*.8,wOpen*3.5);
+          let r=92-46*Math.sin(t*Math.PI),gg=36-20*Math.sin(t*Math.PI),b=44-22*Math.sin(t*Math.PI);
+          if(g>6&&t<.4&&wOpen>.3){const k=smoothstep(.04,.18,t)*(1-smoothstep(.28,.4,t))*smoothstep(.3,.7,wOpen)*smoothstep(6,11,g)*.8;r+=(196-r)*k;gg+=(184-gg)*k;b+=(184-b)*k;}
+          if(t>.7){const k=smoothstep(.7,1,t)*.55;r+=(150-r)*k;gg+=(62-gg)*k;b+=(74-b)*k;}
+          samp(x,y,o);const a=clamp(edge,0,1);out[o]=out[o]*(1-a)+r*a;out[o+1]=out[o+1]*(1-a)+gg*a;out[o+2]=out[o+2]*(1-a)+b*a;}
+      }
+    }
+    mc.putImageData(MOUT,0,0);f.drawImage(MC,MR.x,MR.y);
   }
   function drawBrows(k){if(k<.02)return;const lift=k*3.6;
     bc.globalCompositeOperation='copy';bc.drawImage(img,FR.x,FR.y+4+lift,FR.w,90,0,0,FR.w,90);
@@ -121,7 +149,7 @@
     if(S.talking&&an&&an.frequencyBinCount){if(!freq||freq.length!==an.frequencyBinCount)freq=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(freq);let sum=0;for(let i=2;i<40;i++)sum+=freq[i];S.target=clamp(sum/38/255*2.6,0,1)*.66;}
     else if(S.talking&&!timeline.length)S.target=Math.max(.06,.10+.48*(.5+.5*Math.sin(S.t*25))*(.5+.5*Math.sin(S.t*16.5)));
     if(!S.talking)S.target=Math.max(0,S.target-dt*3);
-    S.mouth=lerp(S.mouth,S.target,1-Math.exp(-dt*(S.target>S.mouth?22:13)));
+    S.mouth=lerp(S.mouth,S.target,1-Math.exp(-dt*(S.target>S.mouth?24:15)));
     // ênfase na fala: energia acima da média recente -> aceno curto e sobrancelhas
     S.env=lerp(S.env,S.talking?S.target:0,1-Math.exp(-dt*10));S.envSlow=lerp(S.envSlow,S.env,1-Math.exp(-dt*1.2));
     if(S.talking&&S.nodCool<=0&&S.env>.3&&S.env-S.envSlow>.12){
@@ -135,7 +163,7 @@
     spring(dt);
     // ---- rosto (só a região de olhos/sobrancelhas/boca é redesenhada) ----
     f.drawImage(img,FR.x,FR.y,FR.w,FR.h,FR.x,FR.y,FR.w,FR.h);
-    drawBrows(S.browCur);drawBlink(E[0],bk);drawBlink(E[1],bk);drawMouth(S.mouth);
+    drawBrows(S.browCur);drawBlink(E[0],bk);drawBlink(E[1],bk);drawMouth(CFG.mouthTest!=null?+CFG.mouthTest:clamp(Math.pow(S.mouth/.6,.8),0,1)); // mouthTest: só para conferir (0 a 1)
     // ---- corpo (respiração e balanço do v7) ----
     const g=Math.min(1,S.gt/1.1),pulse=Math.sin(g*Math.PI);
     const gNod=S.gesture==='nod'?Math.sin(g*Math.PI*2)*pulse:0,gShake=S.gesture==='shake'?Math.sin(g*Math.PI*3)*pulse:0,gLean=S.gesture==='lean'?pulse:0;
@@ -163,7 +191,7 @@
   document.addEventListener('click',e=>{const el=e.target&&e.target.closest&&e.target.closest('[data-cw-gesture],[data-cw-emote],[data-cw-say],[data-cw-pose]');if(!el)return;const d=el.dataset;
     if(d.cwGesture)gesture(d.cwGesture);if(d.cwEmote)emote(d.cwEmote);if(d.cwPose)pose(d.cwPose);if(d.cwSay)CMDS.say(d.cwSay);});
   window.CyberwaveRig={bind,gesture,emote,lookAt,pose,blink,follow:v=>CFG.followCursor=!!v,setMouth,setTalking,config:CFG,
-    state:()=>({ready:ready>=3,rig:'v8.1',images:{foto:!!img.naturalWidth,olhosFechados:closed.ok,boca:visemes.ok},talking:S.talking,mouth:+S.mouth.toFixed(3),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
+    state:()=>({ready:ready>=3,rig:'v8.2',images:{foto:!!img.naturalWidth,olhosFechados:closed.ok,boca:!!MSRC},talking:S.talking,mouth:+S.mouth.toFixed(3),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
       head:{yaw:+S.hp.yaw.toFixed(2),pitch:+S.hp.pitch.toFixed(2),roll:+S.hp.roll.toFixed(2)},brows:+(S.browCur||0).toFixed(2),reducedMotion:!!reduce}), // [site]
     gestures:['nod','shake','lean','wave','present','pointLeft','pointRight','openArms','shrug','thumbsUp','headsetTouch'],emotes:['neutral','happy','surprised','thinking','wink'],presets:['calm','energetic','dj'],landmarks:{eyes:E,mouth:M,jaw:J,brows:BROWS,head:HEAD,pivot:PIV}};
 })();
