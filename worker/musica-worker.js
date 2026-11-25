@@ -1,5 +1,8 @@
 // Cyberwave Radio — buscador de músicas (Cloudflare Worker). Gerado a partir de src/worker/.
 
+// src/lib/version.ts
+var SITE_VERSION = "v39";
+
 // src/lib/yt-parse.ts
 var o = (v) => v && typeof v === "object" ? v : {};
 var runsText = (v) => {
@@ -140,7 +143,7 @@ var INNERTUBE = {
 };
 
 // src/worker/musica-core.ts
-var VERSAO = "v22";
+var VERSAO = SITE_VERSION;
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
 var COOKIE = "SOCS=CAI; CONSENT=YES+";
 function allowOrigin(origin, env) {
