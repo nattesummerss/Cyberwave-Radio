@@ -26,7 +26,7 @@ __export(musica_vercel_exports, {
 module.exports = __toCommonJS(musica_vercel_exports);
 
 // src/lib/version.ts
-var SITE_VERSION = "v39";
+var SITE_VERSION = "v42";
 
 // src/lib/yt-parse.ts
 var o = (v) => v && typeof v === "object" ? v : {};
