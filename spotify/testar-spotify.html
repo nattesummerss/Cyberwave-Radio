@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cyberwave · Testar Spotify neste aparelho</title>
+<style>
+  :root{--bg:#0b0f1a;--card:#131a2b;--ok:#2ecc71;--bad:#e74c3c;--warn:#f1c40f;--txt:#e8ecf5;--mut:#8b94a8;--acc:#1db954}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);padding:24px}
+  h1{font-size:1.4rem;margin:0 0 4px}
+  .sub{color:var(--mut);margin-bottom:20px;font-size:.95rem}
+  .grid{display:grid;gap:12px;max-width:900px}
+  .t{background:var(--card);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:28px 1fr auto;gap:12px;align-items:start}
+  .dot{width:16px;height:16px;border-radius:50%;background:#444;margin-top:3px}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)} .dot.run{background:#3498db;animation:p 1s infinite}
+  @keyframes p{50%{opacity:.3}}
+  .t b{display:block;margin-bottom:2px}
+  .t small{color:var(--mut)}
+  .st{font-weight:600;white-space:nowrap}
+  .st.ok{color:var(--ok)} .st.bad{color:var(--bad)} .st.warn{color:var(--warn)}
+  button{background:var(--acc);color:#000;border:0;border-radius:10px;padding:12px 18px;font-weight:700;cursor:pointer;font-size:1rem}
+  button.sec{background:#2a3350;color:var(--txt)}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
+  #veredito{background:var(--card);border-left:6px solid #444;border-radius:12px;padding:16px;margin-top:8px;max-width:900px}
+  #veredito.ok{border-color:var(--ok)} #veredito.bad{border-color:var(--bad)} #veredito.warn{border-color:var(--warn)}
+  textarea{width:100%;max-width:900px;height:200px;background:#0a0e18;color:#cfd6e6;border:1px solid #2a3350;border-radius:10px;padding:10px;font-family:ui-monospace,Consolas,monospace;font-size:.85rem}
+  #embed{max-width:900px;margin-top:10px}
+</style>
+</head>
+<body>
+<h1>Testar Spotify neste aparelho</h1>
+<div class="sub">Abra esta página <b>dentro da AVD</b>. Ela verifica se o player do Spotify consegue carregar e tocar nesta rede. Nada é enviado para fora; copie o relatório e cole no chat.</div>
+
+<div class="bar">
+  <button id="btnRun">▶ Rodar teste</button>
+  <button class="sec" id="btnCopy" disabled>Copiar relatório</button>
+</div>
+
+<div class="grid" id="tests"></div>
+<div id="veredito" hidden></div>
+<div id="embed"></div>
+<h3 style="margin-top:20px">Relatório</h3>
+<textarea id="rep" readonly placeholder="Rode o teste para gerar o relatório."></textarea>
+
+<script>
+(() => {
+  // Episódio público de podcast (não exige login nem Premium). Troque se quiser.
+  const EPISODIO_TESTE = 'spotify:episode:7makk4oTQel546B0PZlDM5';
+
+  const T = [
+    { id:'https',  nome:'Contexto seguro (HTTPS)', desc:'Embed, SDK e DRM exigem HTTPS ou localhost.' },
+    { id:'iframe', nome:'iFrame API do Spotify', desc:'open.spotify.com/embed/iframe-api/v1 — base do modo gratuito.' },
+    { id:'sdk',    nome:'Web Playback SDK', desc:'sdk.scdn.co/spotify-player.js — base do modo Premium.' },
+    { id:'cdn',    nome:'CDN de imagens (i.scdn.co)', desc:'Capas dos livros/episódios.' },
+    { id:'eme',    nome:'DRM Widevine (EME)', desc:'Obrigatório para o SDK Premium tocar áudio.' },
+    { id:'perm',   nome:'Permissões autoplay / encrypted-media', desc:'Política do navegador para iframes cross-origin.' },
+    { id:'play',   nome:'Embed carrega e fica pronto', desc:'Cria um player real com um episódio público e espera o evento "ready".' },
+  ];
+
+  const res = {};
+  const grid = document.getElementById('tests');
+  T.forEach(t => {
+    const el = document.createElement('div'); el.className='t'; el.id='t_'+t.id;
+    el.innerHTML = `<div class="dot"></div><div><b>${t.nome}</b><small>${t.desc}</small><div class="det" style="color:#aab3c7;font-size:.85rem;margin-top:4px"></div></div><div class="st">—</div>`;
+    grid.appendChild(el);
+  });
+
+  function set(id, estado, txt, det){
+    res[id] = { estado, txt, det: det||'' };
+    const el = document.getElementById('t_'+id);
+    el.querySelector('.dot').className = 'dot '+estado;
+    const st = el.querySelector('.st'); st.className='st '+estado; st.textContent = txt;
+    el.querySelector('.det').textContent = det||'';
+  }
+  const run = id => { const el=document.getElementById('t_'+id); el.querySelector('.dot').className='dot run'; el.querySelector('.st').textContent='testando…'; };
+
+  function loadScript(src, ms=10000){
+    return new Promise((ok, bad) => {
+      const t0 = performance.now();
+      const s = document.createElement('script'); s.src = src; s.async = true;
+      const to = setTimeout(() => { s.remove(); bad(new Error('timeout '+ms+'ms')); }, ms);
+      s.onload = () => { clearTimeout(to); ok(Math.round(performance.now()-t0)); };
+      s.onerror = () => { clearTimeout(to); bad(new Error('bloqueado ou inacessível')); };
+      document.head.appendChild(s);
+    });
+  }
+  function loadImg(src, ms=8000){
+    return new Promise((ok, bad) => {
+      const t0 = performance.now(); const i = new Image();
+      const to = setTimeout(()=>bad(new Error('timeout')), ms);
+      i.onload = () => { clearTimeout(to); ok(Math.round(performance.now()-t0)); };
+      i.onerror = () => { clearTimeout(to); bad(new Error('bloqueado')); };
+      i.src = src + '?cb=' + Date.now();
+    });
+  }
+
+  async function testar(){
+    document.getElementById('btnRun').disabled = true;
+    document.getElementById('btnCopy').disabled = true;
+    document.getElementById('veredito').hidden = true;
+    document.getElementById('embed').innerHTML = '';
+
+    // 1) HTTPS
+    run('https');
+    const secure = window.isSecureContext;
+    set('https', secure?'ok':'bad', secure?'OK':'FALHA', location.protocol + '//' + location.host);
+
+    // 2) iFrame API
+    run('iframe');
+    let iframeApiOk = false;
+    try {
+      const ms = await loadScript('https://open.spotify.com/embed/iframe-api/v1');
+      iframeApiOk = true; set('iframe','ok','OK', ms+' ms');
+    } catch(e){ set('iframe','bad','FALHA', e.message); }
+
+    // 3) SDK
+    run('sdk');
+    let sdkOk = false;
+    try {
+      window.onSpotifyWebPlaybackSDKReady = window.onSpotifyWebPlaybackSDKReady || (()=>{});
+      const ms = await loadScript('https://sdk.scdn.co/spotify-player.js');
+      sdkOk = true; set('sdk','ok','OK', ms+' ms');
+    } catch(e){ set('sdk','bad','FALHA', e.message); }
+
+    // 4) CDN
+    run('cdn');
+    try {
+      const ms = await loadImg('https://i.scdn.co/image/ab67616d0000b273e8b066f70c206551210d902b');
+      set('cdn','ok','OK', ms+' ms');
+    } catch(e){ set('cdn','warn','BLOQUEADA', 'Capas não aparecem; áudio pode tocar mesmo assim.'); }
+
+    // 5) EME / Widevine
+    run('eme');
+    try {
+      if(!navigator.requestMediaKeySystemAccess) throw new Error('API EME ausente');
+      const cfg = [{ initDataTypes:['cenc'], audioCapabilities:[{contentType:'audio/mp4; codecs="mp4a.40.2"'}] }];
+      await navigator.requestMediaKeySystemAccess('com.widevine.alpha', cfg);
+      set('eme','ok','OK','com.widevine.alpha disponível');
+    } catch(e){ set('eme','bad','FALHA', 'Sem Widevine: modo Premium (SDK) não toca. Embed pode funcionar. ' + e.message); }
+
+    // 6) Permissions policy
+    run('perm');
+    try {
+      const fp = document.featurePolicy || document.permissionsPolicy;
+      if(!fp) { set('perm','warn','N/D','Navegador não expõe featurePolicy; o embed decide sozinho.'); }
+      else {
+        const a = fp.allowsFeature('autoplay'), em = fp.allowsFeature('encrypted-media');
+        set('perm', (a&&em)?'ok':'warn', (a&&em)?'OK':'PARCIAL', `autoplay=${a} encrypted-media=${em}`);
+      }
+    } catch(e){ set('perm','warn','N/D', e.message); }
+
+    // 7) Embed real
+    run('play');
+    if(!iframeApiOk){ set('play','bad','FALHA','iFrame API não carregou.'); }
+    else {
+      await new Promise(done => {
+        const to = setTimeout(()=>{ set('play','bad','TIMEOUT','Player não ficou pronto em 20 s (iframe bloqueado?).'); done(); }, 20000);
+        const start = () => {
+          const el = document.createElement('div'); document.getElementById('embed').appendChild(el);
+          window.SpotifyIframeApi.createController(el, { uri: EPISODIO_TESTE, width:'100%', height:152 }, ctrl => {
+            ctrl.addListener('ready', () => {
+              clearTimeout(to);
+              set('play','ok','OK','Player pronto. Clique em ▶ no embed para confirmar som (não precisa de login para episódio).');
+              done();
+            });
+            ctrl.addListener('playback_update', e => {
+              if(e?.data?.position > 0) set('play','ok','TOCANDO', 'Posição '+Math.round(e.data.position/1000)+' s — áudio passa nesta rede.');
+            });
+          });
+        };
+        if(window.SpotifyIframeApi) start();
+        else window.onSpotifyIframeApiReady = api => { window.SpotifyIframeApi = api; start(); };
+      });
+    }
+
+    veredito();
+    relatorio();
+    document.getElementById('btnRun').disabled = false;
+    document.getElementById('btnCopy').disabled = false;
+  }
+
+  function veredito(){
+    const v = document.getElementById('veredito'); v.hidden = false;
+    const embedOk = res.iframe?.estado==='ok' && res.play?.estado==='ok';
+    const premiumOk = embedOk && res.sdk?.estado==='ok' && res.eme?.estado==='ok';
+    if(premiumOk){ v.className='ok'; v.innerHTML='<b>✅ Tudo liberado.</b> Dá para usar o <b>Embed</b> (gratuito) e o <b>modo Premium</b> (Web Playback SDK) na Cyberwave nesta rede.'; }
+    else if(embedOk){ v.className='warn'; v.innerHTML='<b>🟡 Só o Embed.</b> O player do Spotify toca, mas o SDK Premium não (SDK ou Widevine bloqueado). Use <code>spotify-embed.js</code> e esconda o botão "Conectar Spotify" na AVD.'; }
+    else { v.className='bad'; v.innerHTML='<b>🔴 Spotify não passa nesta rede.</b> Mantenha a aba como atalhos (deep link) na AVD e habilite o player só fora da empresa.'; }
+  }
+
+  function relatorio(){
+    const linhas = [
+      '=== Cyberwave · Teste Spotify ===',
+      'Data: ' + new Date().toISOString(),
+      'URL: ' + location.href,
+      'UA: ' + navigator.userAgent,
+      ''
+    ];
+    T.forEach(t => { const r = res[t.id]||{}; linhas.push(`[${(r.txt||'—').padEnd(9)}] ${t.nome}${r.det?' — '+r.det:''}`); });
+    linhas.push('', 'Veredito: ' + document.getElementById('veredito').textContent.trim());
+    document.getElementById('rep').value = linhas.join('\n');
+  }
+
+  document.getElementById('btnRun').onclick = testar;
+  document.getElementById('btnCopy').onclick = async () => {
+    await navigator.clipboard.writeText(document.getElementById('rep').value);
+    document.getElementById('btnCopy').textContent = 'Copiado ✓';
+    setTimeout(()=>document.getElementById('btnCopy').textContent='Copiar relatório', 2000);
+  };
+})();
+</script>
+</body>
+</html>

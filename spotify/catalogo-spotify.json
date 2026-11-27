@@ -1,0 +1,33 @@
+{
+  "_comentario": "Cole URLs ou URIs do Spotify. 'series' = podcasts/audiosséries (tocam completo sem login no embed). 'livros' = audiolivros (embed toca 30 s sem login; completo só com login e direito ao título; modo Premium via SDK). Em 'capitulos' coloque a lista de episódios/capítulos na ordem; o player encadeia sozinho.",
+  "series": [
+    {
+      "titulo": "EXEMPLO · Episódio público de podcast (troque pelo seu)",
+      "autor": "Spotify",
+      "capitulos": [
+        "spotify:episode:7makk4oTQel546B0PZlDM5",
+        "spotify:episode:43cbJh4ccRD7lzM2730YK3"
+      ]
+    },
+    {
+      "titulo": "EXEMPLO · Um show inteiro (o embed mostra a lista de episódios)",
+      "autor": "Cole aqui a URL do show",
+      "uri": "https://open.spotify.com/show/COLE_O_ID_DO_SHOW"
+    }
+  ],
+  "livros": [
+    {
+      "titulo": "EXEMPLO · Audiolivro (cole a URL de open.spotify.com/audiobook/...)",
+      "autor": "Autor",
+      "uri": "https://open.spotify.com/audiobook/COLE_O_ID_DO_AUDIOBOOK"
+    },
+    {
+      "titulo": "EXEMPLO · Audiolivro por capítulos (open.spotify.com/chapter/...)",
+      "autor": "Autor",
+      "capitulos": [
+        "https://open.spotify.com/chapter/COLE_ID_CAP_1",
+        "https://open.spotify.com/chapter/COLE_ID_CAP_2"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cyberwave · Spotify (exemplo da aba)</title>
+<style>
+  :root{--bg:#0b0f1a;--card:#131a2b;--txt:#e8ecf5;--mut:#8b94a8;--acc:#1db954}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);padding:20px}
+  h1{font-size:1.3rem;margin:0 0 14px}
+  .tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+  .tabs button{background:#2a3350;color:var(--txt);border:0;border-radius:999px;padding:8px 14px;cursor:pointer;font-weight:600}
+  .tabs button.on{background:var(--acc);color:#000}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:1100px}
+  @media(max-width:800px){.row{grid-template-columns:1fr}}
+  .card{background:var(--card);border-radius:12px;padding:14px}
+  .lista{display:grid;gap:8px;max-height:420px;overflow:auto}
+  .item{background:#0f1526;border-radius:10px;padding:10px 12px;cursor:pointer;display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .item:hover{outline:1px solid #2a3350}
+  .item.on{outline:2px solid var(--acc)}
+  .item small{color:var(--mut)}
+  .ctrl{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .ctrl button{background:#2a3350;color:var(--txt);border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:600}
+  .ctrl button.acc{background:var(--acc);color:#000}
+  .mut{color:var(--mut);font-size:.9rem}
+  #status{margin-top:8px;font-size:.9rem;color:var(--mut)}
+  .badge{font-size:.75rem;padding:2px 8px;border-radius:999px;background:#2a3350}
+</style>
+</head>
+<body>
+<h1>Spotify na Cyberwave</h1>
+
+<div class="tabs">
+  <button class="on" data-aba="series">Audiosséries (grátis)</button>
+  <button data-aba="livros">Audiolivros (login/compra)</button>
+  <button data-aba="premium">Modo Premium</button>
+</div>
+
+<div class="row">
+  <div class="card">
+    <div id="lista" class="lista"></div>
+    <div class="mut" style="margin-top:8px">Edite a lista em <code>spotify/catalogo-spotify.json</code>. Cole URLs do Spotify; o módulo converte para URI.</div>
+  </div>
+
+  <div class="card">
+    <div id="spotify-player"></div>
+    <div class="ctrl">
+      <button id="bPrev">⏮ Anterior</button>
+      <button id="bToggle" class="acc">⏯ Play/Pause</button>
+      <button id="bNext">⏭ Próximo</button>
+      <a id="bOpen" class="badge" href="#" target="_blank" rel="noopener" style="align-self:center;text-decoration:none;color:var(--txt)">Abrir no Spotify ↗</a>
+    </div>
+    <div id="status">Escolha um item à esquerda.</div>
+
+    <div id="premiumBox" hidden style="margin-top:14px;border-top:1px solid #2a3350;padding-top:12px">
+      <div class="mut">Modo Premium: toca o áudio direto nesta aba (requer Spotify Premium completo e Widevine). Só para uso não comercial.</div>
+      <div class="ctrl">
+        <button id="bLogin" class="acc">Conectar Spotify</button>
+        <button id="bLogout">Sair</button>
+        <button id="bPlayPremium">▶ Tocar seleção no modo Premium</button>
+      </div>
+      <div id="pStatus" class="mut"></div>
+    </div>
+  </div>
+</div>
+
+<script src="spotify-embed.js"></script>
+<script src="spotify-connect.js"></script>
+<script>
+(async () => {
+  // ====== CONFIGURE AQUI (modo Premium) ======
+  const CLIENT_ID   = 'COLE_SEU_CLIENT_ID';                 // developer.spotify.com → seu app
+  const REDIRECT    = location.origin + location.pathname;   // tem de estar cadastrado no app
+  // ==========================================
+
+  const E = CyberwaveSpotify.embed, C = CyberwaveSpotify.connect;
+  const $ = s => document.querySelector(s);
+  let catalogo = { series: [], livros: [] }, aba = 'series', sel = null;
+
+  try { catalogo = await (await fetch('catalogo-spotify.json', { cache: 'no-store' })).json(); }
+  catch (e) { $('#status').textContent = 'catalogo-spotify.json não encontrado — usando lista vazia.'; }
+
+  const embedOk = await E.init('#spotify-player', {
+    height: 352,
+    onChange: (evt, d) => {
+      if (evt === 'ready')   $('#status').textContent = `Pronto · item ${d.index + 1}/${d.total}`;
+      if (evt === 'change')  $('#status').textContent = `Carregando item ${d.index + 1}/${d.total}…`;
+      if (evt === 'ended')   $('#status').textContent = `Fim do item ${d.index + 1}. Indo para o próximo…`;
+      if (evt === 'progress' && d.duration) $('#status').textContent = `${fmt(d.position)} / ${fmt(d.duration)} · item ${d.index + 1}/${d.total}`;
+      if (evt === 'fallback') $('#status').textContent = 'Player bloqueado nesta rede. Use "Abrir no Spotify".';
+      const cur = E.current(); if (cur.url) $('#bOpen').href = cur.url;
+    }
+  });
+  if (!embedOk) { document.querySelector('[data-aba="premium"]').hidden = true; }
+
+  const fmt = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+  function render() {
+    const itens = catalogo[aba === 'premium' ? 'livros' : aba] || [];
+    $('#lista').innerHTML = itens.map((it, i) => `
+      <div class="item ${sel === i ? 'on' : ''}" data-i="${i}">
+        <div><b>${it.titulo}</b><br><small>${it.autor || it.autoria || ''} ${it.capitulos ? '· ' + it.capitulos.length + ' partes' : ''}</small></div>
+        <span class="badge">${aba === 'series' ? 'grátis' : 'login'}</span>
+      </div>`).join('') || '<div class="mut">Nenhum item nesta aba.</div>';
+    $('#lista').querySelectorAll('.item').forEach(el => el.onclick = () => escolher(+el.dataset.i));
+    $('#premiumBox').hidden = aba !== 'premium';
+  }
+
+  function escolher(i) {
+    sel = i; render();
+    const it = (catalogo[aba === 'premium' ? 'livros' : aba] || [])[i];
+    const uris = it.capitulos && it.capitulos.length ? it.capitulos : [it.uri || it.url];
+    if (aba !== 'premium') E.loadQueue(uris, { title: it.titulo });
+    else $('#pStatus').textContent = `Selecionado: ${it.titulo} (${uris.length} parte(s)). Conecte e toque.`;
+    $('#bOpen').href = E.webUrl(uris[0]);
+  }
+
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('on')); b.classList.add('on');
+    aba = b.dataset.aba; sel = null; render();
+  });
+  $('#bPrev').onclick = () => E.prev();
+  $('#bNext').onclick = () => E.next();
+  $('#bToggle').onclick = () => E.toggle();
+
+  // ---- Premium ----
+  C.config({ clientId: CLIENT_ID, redirectUri: REDIRECT });
+  try { if (await C.handleRedirect()) $('#pStatus').textContent = 'Login concluído.'; } catch (e) { $('#pStatus').textContent = 'Erro no login: ' + e.message; }
+  const refreshLogin = async () => {
+    if (C.isLogged()) { try { const u = await C.me(); $('#pStatus').textContent = `Conectado como ${u.display_name} · plano: ${u.product}`; } catch (e) { $('#pStatus').textContent = 'Sessão inválida, conecte de novo.'; } }
+    else $('#pStatus').textContent = 'Não conectado.';
+  };
+  await refreshLogin();
+  $('#bLogin').onclick = () => C.login();
+  $('#bLogout').onclick = () => { C.logout(); refreshLogin(); };
+  $('#bPlayPremium').onclick = async () => {
+    const it = (catalogo.livros || [])[sel]; if (!it) return ($('#pStatus').textContent = 'Escolha um audiolivro à esquerda.');
+    const uris = (it.capitulos && it.capitulos.length ? it.capitulos : [it.uri || it.url]).map(u => E.parseUri(u)?.uri).filter(Boolean);
+    try {
+      $('#pStatus').textContent = 'Criando player…';
+      await C.ready({ onState: s => { const t = s.track_window?.current_track; if (t) $('#pStatus').textContent = `${s.paused ? '⏸' : '▶'} ${t.name} · ${fmt(s.position)} / ${fmt(s.duration)}`; },
+                      onError: e => { $('#pStatus').textContent = `Erro (${e.type}): ${e.message}`; } });
+      await C.play(uris);
+    } catch (e) { $('#pStatus').textContent = 'Não foi possível tocar no modo Premium: ' + e.message; }
+  };
+
+  render();
+})();
+</script>
+</body>
+</html>
