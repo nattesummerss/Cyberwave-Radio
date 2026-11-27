@@ -1,7 +1,7 @@
 // Cyberwave Radio — buscador de músicas (Cloudflare Worker). Gerado a partir de src/worker/.
 
 // src/lib/version.ts
-var SITE_VERSION = "v39";
+var SITE_VERSION = "v42";
 
 // src/lib/yt-parse.ts
 var o = (v) => v && typeof v === "object" ? v : {};
