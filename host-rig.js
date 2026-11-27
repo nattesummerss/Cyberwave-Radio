@@ -1,4 +1,8 @@
-/* Cyberwave Radio — ANDRA-18 anchor rig v8.2 "camada de vida" (v39)
+/* Cyberwave Radio — ANDRA-18 anchor rig v8.3 "camada de vida" (v40)
+ * v40: sílabas visíveis. Voz gravada (MP3): a boca lê o volume real do som a cada quadro (sem a suavização do
+ *      analisador, que deixava a boca parada aberta), normaliza pelo volume da própria fala e fecha nas consoantes.
+ *      Voz do navegador: cada palavra vira sílabas (abre na vogal, fecha na consoante; m/b/p fecham os lábios), no
+ *      ritmo medido da própria voz. A forma também muda: o/u arredondam, i/e esticam, a abre mais.
  * v39: boca nova. Em vez de colar quadros de boca por cima da foto (deixavam um halo escuro e abriam pouco), a boca
  *      é feita deformando os próprios lábios da foto: o lábio de baixo e o queixo descem, o de cima sobe um pouco e
  *      aparece o interior da boca com os dentes de cima. mouth_visemes.png não é mais usado.
@@ -62,20 +66,49 @@
     // cabeça: alvo (atenção), posição e velocidade (mola) — yaw/pitch em -1..1, roll em graus
     aim:{yaw:0,pitch:0,roll:0},hp:{yaw:0,pitch:0,roll:0},hv:{yaw:0,pitch:0,roll:0},nextAim:1.2,
     brow:0,browT:0,nextIdleBrow:rnd(6,14),env:0,envSlow:0,nodCool:0,ph:[rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9),rnd(0,9)]};
-  let ready=0,timeline=[],fallback=null,freq=null;
+  let ready=0,fallback=null,freq=null,tbuf=null;const AU={peak:.05,fast:0,slow:0,shape:0};
   const loaded=()=>{if(ready)return;ready=3;{try{const t=mk(MR.w,MR.h).getContext('2d');t.drawImage(img,MR.x,MR.y,MR.w,MR.h,0,0,MR.w,MR.h);MSRC=t.getImageData(0,0,MR.w,MR.h);MOUT=mc.createImageData(MR.w,MR.h);}catch(e){MSRC=null;}const h=HS.getContext('2d');h.drawImage(img,HB.x,HB.y,HB.w,HB.h,0,0,HB.w,HB.h);h.globalCompositeOperation='destination-in';h.drawImage(HM,0,0);
     img.style.display='none';requestAnimationFrame(frame);}};
   if(img.complete&&img.naturalWidth)loaded();else img.addEventListener('load',loaded,{once:true});
   function startTalk(){S.talking=true;root.classList.add('is-talking');S.nextAim=Math.min(S.nextAim,.4);}
-  function stopTalk(){S.talking=false;S.target=0;timeline=[];root.classList.remove('is-talking');}
+  function stopTalk(){S.talking=false;S.target=0;pulses=[];root.classList.remove('is-talking');}
   function setTalking(v){v?startTalk():stopTalk();}
   function setMouth(v){S.target=clamp(+v||0,0,.78);}
-  function schedule(text,start){
-    const chars=String(text||'').toLowerCase();let t=start;
-    for(const ch of chars){const vowel=/[aáàãâeéêoóôõiíuú]/i.test(ch);timeline.push({at:t,v:vowel?.26+Math.random()*.40:/[mbp]/i.test(ch)?0:.10});t+=52;}
+  // [v40] sílabas: abre na vogal, fecha na consoante seguinte. shape: -1 esticada (i/e), 0 neutra (a), 1 redonda (o/u).
+  const VQ=[[/[aáàâã]/,1,0],[/[óõ]/,.82,.6],[/[ô]/,.7,.8],[/[o]/,.72,.75],[/[u]/,.48,1],[/[éê]/,.78,-.35],[/[e]/,.66,-.45],[/[iíy]/,.46,-.85]];
+  function syllables(word){
+    const w=String(word||'').toLowerCase().replace(/[^a-zà-ÿ]/g,'');const out=[];
+    if(!w)return out;
+    const re=/([^aeiouyáàâãéêíóôõú]*)([aeiouyáàâãéêíóôõú]+)/g;let m,last=0;
+    while((m=re.exec(w))){const v=m[2];let q=VQ.find(r=>r[0].test(v[0]))||VQ[0];if(v.length>1){const q2=VQ.find(r=>r[0].test(v[v.length-1]));if(q2&&q2[1]>q[1])q=q2;}
+      out.push({open:q[1]*(.86+Math.random()*.18),shape:q[2],w:1+.22*m[1].length,close:.16});last=re.lastIndex;}
+    if(!out.length)out.push({open:.35,shape:0,w:1,close:.1});
+    // consoante depois de cada vogal define o fechamento: m/b/p fecham os lábios, f/v quase
+    let i=0;w.replace(/[aeiouyáàâãéêíóôõú]+([^aeiouyáàâãéêíóôõú]?)/g,(_,c)=>{if(out[i]){out[i].close=/[mbp]/.test(c)?0:/[fv]/.test(c)?.06:c?.14:.2;}i++;return _;});
+    if(last<w.length)out[out.length-1].w+=.25*(w.length-last);
+    return out;
+  }
+  // linha do tempo de sílabas {at,dur,open,shape,close}
+  let pulses=[],sylMs=175,lastB=0,lastBSyl=0;
+  function queueWord(word,at,gap){const syl=syllables(word);for(const q of syl){const dur=sylMs*q.w;pulses.push({at,dur,open:q.open,shape:q.shape,close:q.close});at+=dur;}return at+(gap||0);}
+  function schedule(text,start){pulses=[];let at=start;for(const wd of String(text||'').split(/\s+/)){if(!wd)continue;at=queueWord(wd,at,/[.,;:!?]$/.test(wd)?sylMs*1.2:sylMs*.15);}}
+  function pulseNow(now){
+    while(pulses.length&&pulses[0].at+pulses[0].dur<now)pulses.shift();
+    const p=pulses[0];if(!p||p.at>now)return null;
+    const k=(now-p.at)/p.dur,rise=smooth(clamp(k/.38,0,1)),fall=smooth(clamp((k-.62)/.38,0,1));
+    return {v:p.open*rise*(1-fall)+p.close*fall*.9,shape:p.shape};
   }
   function bind(u,text,opts){const last=!opts||opts.last!==false; // [site] opts.last===false: ainda há trecho (outro idioma) depois deste
-    clearTimeout(fallback);timeline=[];u.addEventListener('start',()=>{startTalk();schedule(text,performance.now());});u.addEventListener('boundary',e=>{S.target=.35+Math.random()*.6;if(e.charIndex!=null)schedule(String(text).slice(e.charIndex,e.charIndex+(e.charLength||1)),performance.now());});u.addEventListener('end',last?stopTalk:()=>{timeline=[];});u.addEventListener('error',stopTalk);fallback=setTimeout(()=>{if(S.talking&&!timeline.length)schedule(text,performance.now());},250);}
+    clearTimeout(fallback);pulses=[];let gotWord=false;const rate=u.rate||1;sylMs=clamp(sylMs,120,260);
+    u.addEventListener('start',()=>{startTalk();lastB=0;fallback=setTimeout(()=>{if(S.talking&&!gotWord)schedule(text,performance.now());},260);});
+    u.addEventListener('boundary',e=>{if(e.name&&e.name!=='word')return;const now=performance.now();
+      const len=e.charLength||(String(text).slice(e.charIndex).match(/^\S+/)||[''])[0].length,word=String(text).slice(e.charIndex,e.charIndex+len);
+      // calibra a duração da sílaba pelo intervalo real entre palavras desta voz
+      if(lastB&&lastBSyl){const ms=(now-lastB)/(lastBSyl+.35);if(ms>70&&ms<420)sylMs=lerp(sylMs,ms,.35);}
+      lastB=now;lastBSyl=syllables(word).reduce((n,q)=>n+q.w,0);
+      if(!gotWord){gotWord=true;pulses=[];}pulses=pulses.filter(p=>p.at<now&&p.at+p.dur>now).slice(0,1);
+      queueWord(word,pulses.length?pulses[0].at+pulses[0].dur:now,0);});
+    u.addEventListener('end',last?stopTalk:()=>{pulses=[];});u.addEventListener('error',stopTalk);void rate;}
   const HEAD_GESTURES=['nod','shake','lean']; // [site] só a cabeça se move na still frontal
   function gesture(name){S.gesture=HEAD_GESTURES.includes(name)?name:name==='shrug'?'shake':'nod';S.gt=0;
     if(name==='headsetTouch'||name==='present'||name==='pointLeft')S.aim.roll=rnd(-1,-.5); // v8: inclina para o lado
@@ -99,14 +132,15 @@
   }
   function drawBlink(e,k){if(k<=.01||!closed.ok)return;f.save();f.beginPath();f.ellipse(e.cx,e.cy,e.w*.53,e.h*.40,0,0,Math.PI*2);f.clip();f.globalAlpha=k;f.drawImage(closed,0,0,W,H);f.restore();}
   // [v39] open 0..1: lábio de baixo + queixo descem até ~13 px, lábio de cima sobe até ~2,5 px, interior escuro com dentes.
-  function drawMouth(open){
-    if(open<.02||!MSRC)return;
-    const D=16*open,U=3*open,src=MSRC.data,out=MOUT.data,w=MR.w,h=MR.h,bottom=h-2;
+  function drawMouth(open,shape){
+    if(open<.02||!MSRC)return;shape=clamp(shape||0,-1,1);
+    const rnd_=Math.max(0,shape),spr=Math.max(0,-shape),half=57*(1-.24*rnd_+.06*spr); // o/u: boca mais estreita; i/e: mais larga
+    const D=21*open*(1-.18*spr+.06*rnd_),U=3.6*open*(1+.5*rnd_),src=MSRC.data,out=MOUT.data,w=MR.w,h=MR.h,bottom=h-2;
     const smoothstep=(a,b,v)=>{const t=clamp((v-a)/(b-a),0,1);return t*t*(3-2*t);};
     const samp=(x,y,o)=>{y=clamp(y,0,h-1);const y0=Math.floor(y),y1=Math.min(h-1,y0+1),f=y-y0,i0=(y0*w+x)*4,i1=(y1*w+x)*4;
       out[o]=src[i0]+(src[i1]-src[i0])*f;out[o+1]=src[i0+1]+(src[i1+1]-src[i0+1])*f;out[o+2]=src[i0+2]+(src[i1+2]-src[i0+2])*f;out[o+3]=255;};
     for(let x=0;x<w;x++){
-      const X=MR.x+x,dx=(X-512)/57;
+      const X=MR.x+x,dx=(X-512)/half;
       const wOpen=Math.abs(dx)>=1?0:Math.pow(1-dx*dx,1.15);           // abertura: lente, fecha nos cantos
       const wJaw=1-smoothstep(.7,1.35,Math.abs(dx));                 // queixo: mais largo e suave
       const L=lipY(clamp(X,444,580))-MR.y,dOpen=D*wOpen,dJaw=D*Math.max(wOpen,wJaw*.85),u=U*wOpen;
@@ -117,7 +151,7 @@
         else{ // interior da boca
           const g=bot-top,t=(y-top)/Math.max(g,1e-3),edge=Math.min(1,(y-top+.5)*.8,(bot-y+.5)*.8,wOpen*3.5);
           let r=92-46*Math.sin(t*Math.PI),gg=36-20*Math.sin(t*Math.PI),b=44-22*Math.sin(t*Math.PI);
-          if(g>6&&t<.4&&wOpen>.3){const k=smoothstep(.04,.18,t)*(1-smoothstep(.28,.4,t))*smoothstep(.3,.7,wOpen)*smoothstep(6,11,g)*.8;r+=(196-r)*k;gg+=(184-gg)*k;b+=(184-b)*k;}
+          if(g>6&&t<.4&&wOpen>.3){const k=smoothstep(.04,.18,t)*(1-smoothstep(.28,.4,t))*smoothstep(.3,.7,wOpen)*smoothstep(6,11,g)*.8*(1-.6*rnd_);r+=(196-r)*k;gg+=(184-gg)*k;b+=(184-b)*k;}
           if(t>.7){const k=smoothstep(.7,1,t)*.55;r+=(150-r)*k;gg+=(62-gg)*k;b+=(74-b)*k;}
           samp(x,y,o);const a=clamp(edge,0,1);out[o]=out[o]*(1-a)+r*a;out[o+1]=out[o+1]*(1-a)+gg*a;out[o+2]=out[o+2]*(1-a)+b*a;}
       }
@@ -144,12 +178,31 @@
     if(S.gesture){S.gt+=dt;if(S.gt>1.2){S.gesture='';S.gt=0;}}
     S.nodCool-=dt;
     // boca
-    while(timeline.length&&timeline[0].at<=now)S.target=timeline.shift().v;
-    const an=window.cwHostAnalyser; // [site] MP3 da voz neural tocando: a boca segue a energia da voz
-    if(S.talking&&an&&an.frequencyBinCount){if(!freq||freq.length!==an.frequencyBinCount)freq=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(freq);let sum=0;for(let i=2;i<40;i++)sum+=freq[i];S.target=clamp(sum/38/255*2.6,0,1)*.66;}
-    else if(S.talking&&!timeline.length)S.target=Math.max(.06,.10+.48*(.5+.5*Math.sin(S.t*25))*(.5+.5*Math.sin(S.t*16.5)));
+    const an=window.cwHostAnalyser; // [site] MP3 da voz neural tocando: a boca segue o volume real, sílaba por sílaba
+    let shapeGoal=0;
+    if(S.talking&&an&&an.fftSize){
+      // [v40] volume do som agora (forma de onda, sem a suavização do analisador)
+      if(!tbuf||tbuf.length!==an.fftSize)tbuf=new Float32Array(an.fftSize);
+      if(an.getFloatTimeDomainData)an.getFloatTimeDomainData(tbuf);else{const b=new Uint8Array(an.fftSize);an.getByteTimeDomainData(b);for(let i=0;i<b.length;i++)tbuf[i]=(b[i]-128)/128;}
+      let sum=0;for(let i=0;i<tbuf.length;i++)sum+=tbuf[i]*tbuf[i];const rms=Math.sqrt(sum/tbuf.length);
+      AU.peak=Math.max(rms,AU.peak*Math.exp(-dt/2.5),.02);                       // volume de referência da própria fala
+      const n=clamp((rms/AU.peak-.22)/.78,0,1);
+      AU.fast=lerp(AU.fast,n,1-Math.exp(-dt*(n>AU.fast?45:32)));AU.slow=lerp(AU.slow,AU.fast,1-Math.exp(-dt*3));
+      const onset=Math.max(0,AU.fast-AU.slow);                                   // início de sílaba: abre mais
+      S.target=clamp(Math.pow(AU.fast,1.8)*.85+onset*.55,0,1);                    // contraste: vogal abre, consoante quase fecha
+      // forma da boca pelo timbre: som mais grave (o/u) arredonda, mais agudo (i/e) estica
+      if(an.frequencyBinCount){if(an.smoothingTimeConstant>.4)an.smoothingTimeConstant=.35;if(!freq||freq.length!==an.frequencyBinCount)freq=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(freq);
+        const hz=(an.context?an.context.sampleRate:48000)/an.fftSize;let lo=0,hi=0;for(let i=Math.round(250/hz);i<Math.round(900/hz);i++)lo+=freq[i];for(let i=Math.round(1400/hz);i<Math.round(3200/hz);i++)hi+=freq[i];
+        const r=hi/(lo+1)*(900-250)/(3200-1400);if(n>.2)AU.shape=lerp(AU.shape,clamp((.55-r)*2.2,-1,1),1-Math.exp(-dt*10));}
+      shapeGoal=AU.shape;
+    } else if(S.talking){
+      const p=pulseNow(now);
+      if(p){S.target=p.v;shapeGoal=p.shape;}
+      else S.target=pulses.length?.04:Math.max(.06,.12+.5*Math.pow(Math.max(0,Math.sin(S.t*Math.PI*2*4.6)),1.4)*(.6+.4*Math.sin(S.t*2.1))); // sem palavras da voz: ritmo silábico (~4,6/s) que fecha entre sílabas
+    }
+    S.shape=lerp(S.shape||0,S.talking?shapeGoal:0,1-Math.exp(-dt*12));
     if(!S.talking)S.target=Math.max(0,S.target-dt*3);
-    S.mouth=lerp(S.mouth,S.target,1-Math.exp(-dt*(S.target>S.mouth?24:15)));
+    S.mouth=lerp(S.mouth,S.target,1-Math.exp(-dt*(S.target>S.mouth?30:20)));
     // ênfase na fala: energia acima da média recente -> aceno curto e sobrancelhas
     S.env=lerp(S.env,S.talking?S.target:0,1-Math.exp(-dt*10));S.envSlow=lerp(S.envSlow,S.env,1-Math.exp(-dt*1.2));
     if(S.talking&&S.nodCool<=0&&S.env>.3&&S.env-S.envSlow>.12){
@@ -163,7 +216,7 @@
     spring(dt);
     // ---- rosto (só a região de olhos/sobrancelhas/boca é redesenhada) ----
     f.drawImage(img,FR.x,FR.y,FR.w,FR.h,FR.x,FR.y,FR.w,FR.h);
-    drawBrows(S.browCur);drawBlink(E[0],bk);drawBlink(E[1],bk);drawMouth(CFG.mouthTest!=null?+CFG.mouthTest:clamp(Math.pow(S.mouth/.6,.8),0,1)); // mouthTest: só para conferir (0 a 1)
+    drawBrows(S.browCur);drawBlink(E[0],bk);drawBlink(E[1],bk);drawMouth(CFG.mouthTest!=null?+CFG.mouthTest:clamp(S.mouth,0,1),CFG.shapeTest!=null?+CFG.shapeTest:S.shape); // mouthTest: só para conferir (0 a 1)
     // ---- corpo (respiração e balanço do v7) ----
     const g=Math.min(1,S.gt/1.1),pulse=Math.sin(g*Math.PI);
     const gNod=S.gesture==='nod'?Math.sin(g*Math.PI*2)*pulse:0,gShake=S.gesture==='shake'?Math.sin(g*Math.PI*3)*pulse:0,gLean=S.gesture==='lean'?pulse:0;
@@ -191,7 +244,7 @@
   document.addEventListener('click',e=>{const el=e.target&&e.target.closest&&e.target.closest('[data-cw-gesture],[data-cw-emote],[data-cw-say],[data-cw-pose]');if(!el)return;const d=el.dataset;
     if(d.cwGesture)gesture(d.cwGesture);if(d.cwEmote)emote(d.cwEmote);if(d.cwPose)pose(d.cwPose);if(d.cwSay)CMDS.say(d.cwSay);});
   window.CyberwaveRig={bind,gesture,emote,lookAt,pose,blink,follow:v=>CFG.followCursor=!!v,setMouth,setTalking,config:CFG,
-    state:()=>({ready:ready>=3,rig:'v8.2',images:{foto:!!img.naturalWidth,olhosFechados:closed.ok,boca:!!MSRC},talking:S.talking,mouth:+S.mouth.toFixed(3),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
+    state:()=>({ready:ready>=3,rig:'v8.3',images:{foto:!!img.naturalWidth,olhosFechados:closed.ok,boca:!!MSRC},talking:S.talking,mouth:+S.mouth.toFixed(3),shape:+(S.shape||0).toFixed(2),syllableMs:Math.round(sylMs),gesture:S.gesture,breath:CFG.breathAmount,life:CFG.life,
       head:{yaw:+S.hp.yaw.toFixed(2),pitch:+S.hp.pitch.toFixed(2),roll:+S.hp.roll.toFixed(2)},brows:+(S.browCur||0).toFixed(2),reducedMotion:!!reduce}), // [site]
     gestures:['nod','shake','lean','wave','present','pointLeft','pointRight','openArms','shrug','thumbsUp','headsetTouch'],emotes:['neutral','happy','surprised','thinking','wink'],presets:['calm','energetic','dj'],landmarks:{eyes:E,mouth:M,jaw:J,brows:BROWS,head:HEAD,pivot:PIV}};
 })();
