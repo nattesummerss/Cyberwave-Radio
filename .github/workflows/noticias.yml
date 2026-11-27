@@ -8,8 +8,9 @@
 # Este arquivo precisa ficar exatamente em .github/workflows/noticias.yml no repositório.
 # A cada execução, a aba Actions mostra um resumo com o status de cada fonte.
 # Uma vez por dia o GitHub também procura rádios novas para as abas (radios-extras.json; ver o passo
-# "Descobrir rádios novas", todas as abas desde a v34). A cada 6 horas atualiza os episódios da seção Podcasts
-# (podcasts.json) e, a cada 7 dias, procura podcasts e audiolivros novos cujo áudio toca na rede da empresa (AVD).
+# "Descobrir rádios novas", todas as abas desde a v34; desde a v42 as rádios de esporte do Brasil passam na frente). A cada 6 horas atualiza os episódios da seção Podcasts
+# (podcasts.json) e, a cada 7 dias, procura podcasts e audiolivros novos cujo áudio toca na rede da empresa (AVD);
+# desde a v41 são 146 buscas em 12 abas, feitas aos poucos, e os programas achados se acumulam.
 # Se uma execução falhar, a próxima (a cada 15 minutos) publica de novo sozinha. Para não esperar, use
 # Actions → "Cyberwave Radio - site e notícias" → Run workflow; "Re-run jobs" também funciona (v28).
 
@@ -287,6 +288,8 @@ jobs:
           # Cada candidata é conferida antes de entrar (a StreamTheWorld confirma que existe e o áudio responde).
           # As rádios já descobertas são conferidas de novo a cada busca; saem depois de 3 buscas seguidas sem áudio.
           # Resultado: radios-extras.json, publicado junto com o site (o site junta essas rádios às abas).
+          # v42: rádios de esporte do Brasil primeiro (buscas próprias no diretório; nas abas Esportes e "Fora da empresa" elas
+          # passam na frente) e, uma vez por semana, palpites de rádios de esporte do Brasil na StreamTheWorld (PALPITES).
           import concurrent.futures as cf, gzip, hashlib, json, os, re, socket, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
           socket.setdefaulttimeout(20)
           from datetime import datetime, timezone
@@ -311,6 +314,7 @@ jobs:
           TAB_NAME = {"sp": "São Paulo", "rj": "Rio de Janeiro", "bh": "Belo Horizonte", "rnb": "R&B", "rock": "Rock internacional", "sports": "Esportes",
                       "intl": "Internacionais", "web": "Web e outras cidades", "fora": "Fora da empresa"}
           CITY_TABS = ("sp", "rj", "bh")
+          SEARCH_V = 42     # versão da busca (v42: esporte do Brasil). Mudou = busca já, sem esperar as 24 h.
           RETRY_DAYS = 14   # candidata que falhou só é tentada de novo depois disso
           MAX_FAILS = 3     # buscas seguidas sem áudio até a rádio sair
           BUDGET_S = 300    # tempo máximo de conferência por execução
@@ -363,7 +367,12 @@ jobs:
           RELIG = re.compile(r"christ|gospel|relig|cathol|catol|catól|worship|church|igreja|iglesia|evangel|bibl|jesus|praise|louvor|adventist|islam|quran|coran|cristã|cristia|catequ|bible|pentecost|kirche", re.I)
           SPORTS = {"sports", "sport", "sports talk", "sports radio", "sports news", "deportes", "deporte", "esportes", "esporte", "futebol", "futbol",
                     "fútbol", "football", "soccer", "espn", "fox sports", "nfl", "nba", "mlb", "nhl", "baseball", "béisbol", "beisbol", "basketball", "hockey"}
-          NAME_SPORTS = re.compile(r"\b(espn|sports?|deportes?|esportes?|the fan|the ticket|the score|tudn|fox sports)\b", re.I)
+          NAME_SPORTS = re.compile(r"\b(espn|sports?|deportes?|esportes?|esportiv[ao]s?|futebol|the fan|the ticket|the score|tudn|fox sports)\b", re.I)
+          # Estados do Brasil (lugar das rádios descobertas antes da v42, que não traziam a marca "br").
+          BR_PLACES = {"brasil", "acre", "alagoas", "amapa", "amazonas", "bahia", "ceara", "distrito federal", "espirito santo", "goias", "maranhao",
+                       "mato grosso", "mato grosso do sul", "minas gerais", "para", "paraiba", "parana", "pernambuco", "piaui", "rio de janeiro",
+                       "rio grande do norte", "rio grande do sul", "rondonia", "roraima", "santa catarina", "sao paulo", "sergipe", "tocantins"}
+          SPORT_GENRES = {"Esportes", "Notícias e esportes", "Esportes em espanhol"}
           RNB = {"rnb", "r&b", "r'n'b", "r n b", "r & b", "rhythm and blues", "soul", "neo soul", "neo-soul", "classic soul", "hip hop", "hip-hop", "hiphop", "rap",
                  "urban", "urban contemporary", "urban ac", "urban adult contemporary", "old school", "old school hip hop", "slow jams", "quiet storm",
                  "hip hop/r&b", "r&b/hip hop", "hip-hop/r&b", "trap", "rhythmic", "rhythmic contemporary", "motown", "funk soul"}
@@ -604,6 +613,8 @@ jobs:
                      "bitrate": item.get("bitrate") if isinstance(item.get("bitrate"), int) else None,
                      "addedAt": item.get("addedAt") if parse_iso(item.get("addedAt")) else now_iso(), "fails": 0}
               if item["tab"] in CITY_TABS and isinstance(item.get("freq"), (int, float)) and 87.5 <= item["freq"] <= 108: out["freq"] = float(item["freq"])
+              if isinstance(item.get("br"), bool): out["br"] = item["br"]
+              if item["tab"] == "fora": out["sport"] = item.get("esporte") is True
               return out
 
           def load_state():
@@ -624,8 +635,20 @@ jobs:
                       pass
               return {"stations": [], "rejected": {}}, "novo"
 
+          def br_of(s):
+              """Rádio do Brasil? Marca da busca (v42) ou, nas rádios antigas, a aba/lugar."""
+              if isinstance(s.get("br"), bool): return s["br"]
+              return s.get("tab") in CITY_TABS + ("web",) or re.sub(r"\s+", " ", fold(s.get("place") or "")).strip() in BR_PLACES
+
+          def sport_of(s):
+              """Rádio de esporte? Marca da busca (v42) ou, nas rádios antigas, a aba/gênero."""
+              if isinstance(s.get("sport"), bool): return s["sport"]
+              return s.get("tab") == "sports" or s.get("genre") in SPORT_GENRES
+
           def public(s):
               out = {k: s[k] for k in ("id", "name", "tab", "genre", "place", "url", "codec", "addedAt") if s.get(k)}
+              out["br"] = br_of(s)
+              if s.get("tab") == "fora" and sport_of(s): out["esporte"] = True   # v42: aparece também na aba Esportes do site
               if s.get("bitrate"): out["bitrate"] = s["bitrate"]
               if s.get("tab") in CITY_TABS and s.get("freq"): out["freq"] = s["freq"]
               out["fala"] = fala_of(s["name"], s["place"])
@@ -646,9 +669,55 @@ jobs:
           QUERIES = ([{"tag": t, "limit": 500} for t in ("rnb", "r&b", "soul", "hip hop", "urban", "trap", "rap")]
                      + [{"tag": t, "limit": 500} for t in ("rock", "metal", "alternative", "punk")]
                      + [{"tag": t, "limit": 400} for t in ("sports", "deportes", "esportes", "futbol")]
+                     # v42: esporte do Brasil (rádios de futebol e jornalismo esportivo de todo o país)
+                     + [{"countrycode": "BR", "tag": t, "limit": 300} for t in ("futebol", "esportes", "esporte", "sports", "soccer", "football")]
+                     + [{"countrycode": "BR", "name": n, "limit": 200} for n in ("esporte", "futebol", "esportiva")]
                      + [{"countrycode": "BR", "limit": 2500}]
                      + [{"limit": 3000}]
                      + [{"tag": t, "limit": 300} for t in ("news", "jazz", "latin", "country", "dance", "80s")])
+
+          # v42: palpites de rádios de esporte do Brasil na StreamTheWorld (a única plataforma que toca na AVD) que não aparecem
+          # no diretório com esse endereço. Uma vez por semana o GitHub pergunta à StreamTheWorld se algum destes pontos de
+          # montagem existe e responde com áudio; a rádio só entra (aba Esportes) se tocar. Os nomes seguem o padrão das rádios
+          # do mesmo grupo que já tocam na AVD (RadioBandeirantesAAC, BANDNEWSFM_SPAAC, CBN_SPAAC, CBN_RJ_ADP, RADIO_GLOBO_RJAAC).
+          PALPITES = [
+              ("Rádio Bandeirantes Porto Alegre", "Porto Alegre", "Notícias e esportes",
+               ["RADIOBANDEIRANTES_POAAAC", "RADIOBANDEIRANTESPOAAAC", "BANDEIRANTES_POAAAC", "BANDEIRANTESPOAAAC", "RADIO_BANDEIRANTES_POAAAC", "RB_POAAAC", "BAND_POAAAC"]),
+              ("Rádio Bandeirantes Brasília", "Brasília", "Notícias e esportes",
+               ["RADIOBANDEIRANTES_BSBAAC", "RADIOBANDEIRANTESBSBAAC", "BANDEIRANTES_BSBAAC", "RB_BSBAAC", "RADIOBANDEIRANTES_DFAAC"]),
+              ("Rádio Bandeirantes Santos", "Santos", "Notícias e esportes", ["RADIOBANDEIRANTES_SANTOSAAC", "BANDEIRANTES_SANTOSAAC", "RB_SANTOSAAC"]),
+              ("BandNews FM Belo Horizonte", "Belo Horizonte", "Notícias e esportes", ["BANDNEWSFM_BHAAC", "BANDNEWSFM_BH_ADP", "BANDNEWS_BHAAC"]),
+              ("Jovem Pan News", "São Paulo", "Notícias e esportes", ["JP_SP_AMAAC", "JP_SP_NEWSAAC", "JOVEMPAN_NEWSAAC", "JPNEWS_SPAAC", "JOVEMPANNEWSAAC"]),
+              ("CBN Brasília", "Brasília", "Notícias e esportes", ["CBN_BSBAAC", "CBN_BSB_ADP", "CBN_BRASILIAAAC", "CBN_DFAAC"]),
+              ("CBN Floripa", "Florianópolis", "Notícias e esportes", ["CBN_FLOAAC", "CBN_FLO", "CBNDIARIOAAC", "CBN_DIARIOAAC", "CBN_FLORIPAAAC"]),
+              ("Rádio Globo São Paulo", "São Paulo", "Esportes e pagode", ["RADIO_GLOBO_SPAAC", "RADIOGLOBO_SPAAC"]),
+              ("Rádio Gaúcha", "Porto Alegre", "Notícias e esportes", ["GAUCHA_POAAAC", "GAU_POAAAC", "RADIOGAUCHAAAC", "GAUCHAAAC"]),
+              ("Rádio Itatiaia", "Belo Horizonte", "Notícias e esportes", ["ITATIAIAAAC", "RADIOITATIAIAAAC", "ITATIAIA_BHAAC"]),
+              ("Super Rádio Tupi", "Rio de Janeiro", "Notícias e esportes", ["SUPERRADIOTUPIAAC", "RADIOTUPIAAC", "TUPI_RJAAC"]),
+          ]
+          PALPITES_DAYS = 7
+
+          def try_palpites(state, keys, taken, deadline):
+              """Testa os palpites (1 vez por semana, ou na hora se a lista mudar). Devolve (rádios que tocaram, nomes testados ou None)."""
+              cfg = hashlib.sha1(json.dumps(PALPITES, ensure_ascii=False).encode()).hexdigest()[:10]
+              info = state.get("palpites") or {}
+              if info.get("cfg") == cfg and time.time() - parse_iso(info.get("at")) < PALPITES_DAYS * 86400: return [], None
+              found, tried = [], 0
+              for name, place, genre, mounts in PALPITES:
+                  if time.time() > deadline: return found, None          # sem tempo: tenta de novo na próxima execução
+                  for mount in mounts:
+                      key = key_of(mount)
+                      if key in keys or key in taken: break                 # já está no site (ou já foi achada)
+                      if key in state.get("rejected", {}): continue          # saiu há pouco por falta de áudio
+                      tried += 1
+                      ok, why, upd = verify({"mount": mount, "ext": "aac", "name": name, "place": place, "tab": "sports", "genre": genre})
+                      if ok:
+                          upd.update(key=key, id=slug(key), br=True, sport=True, palpite=True, addedAt=now_iso(), okAt=now_iso(), fails=0)
+                          upd.pop("ext", None)
+                          found.append(upd); taken.add(key)
+                          break
+              state["palpites"] = {"cfg": cfg, "at": now_iso(), "found": [s["name"] for s in found], "tried": tried}
+              return found, tried
 
           def web_candidate(r):
               """Rádio de outro servidor para a aba "Fora da empresa" (só https, áudio direto, conferida pelo diretório)."""
@@ -663,6 +732,7 @@ jobs:
               clicks = int(r.get("clickcount") or 0) + int(r.get("votes") or 0) // 10
               return {"key": web_key(url), "mount": None, "url": url, "tab": "fora", "name": name, "genre": genre_of(tab, r),
                       "place": place_of(r), "clicks": clicks, "codec": "MP3" if codec == "MP3" else "AAC",
+                      "br": (r.get("countrycode") or "").upper() == "BR", "sport": tab == "sports",
                       "bitrate": int(r["bitrate"]) if str(r.get("bitrate") or "").isdigit() and 8 <= int(r["bitrate"]) <= 512 else None}
 
           def candidates():
@@ -692,7 +762,8 @@ jobs:
                       codec = (r.get("codec") or "").upper()
                       ext = "aac" if ("AAC" in mount.upper() or mount.upper().endswith("_ADP") or "AAC" in codec) else "mp3"
                       c = {"key": key, "mount": mount, "ext": ext, "tab": tab, "name": name, "genre": genre_of(genre_tab, r), "place": place_of(r),
-                           "clicks": clicks, "bitrate": int(r["bitrate"]) if str(r.get("bitrate") or "").isdigit() and 8 <= int(r["bitrate"]) <= 512 else None}
+                           "clicks": clicks, "bitrate": int(r["bitrate"]) if str(r.get("bitrate") or "").isdigit() and 8 <= int(r["bitrate"]) <= 512 else None,
+                           "br": (r.get("countrycode") or "").upper() == "BR", "sport": genre_tab == "sports"}
                       if freq: c["freq"] = freq
                       if key not in pool or clicks > pool[key]["clicks"]: pool[key] = c
               if not answered: return None
@@ -734,7 +805,7 @@ jobs:
               next_t = parse_iso(state.get("nextAt"))
               if parse_iso(state.get("searchedAt")): next_t = min(next_t, parse_iso(state.get("searchedAt")) + EVERY_H * 3600)
               # v34: abas novas na busca (São Paulo, Rio, BH e Fora da empresa) = busca já, sem esperar as 24 h.
-              due = origin == "novo" or next_t <= started or not state.get("searchedAt") or state.get("tabs") != TABS
+              due = origin == "novo" or next_t <= started or not state.get("searchedAt") or state.get("tabs") != TABS or state.get("versao") != SEARCH_V
               if not due:
                   pub = publish(state, keys)
                   left_h = (next_t - started) / 3600
@@ -782,7 +853,7 @@ jobs:
                   if room <= 0 or not pool: continue
                   queue = sorted([c for c in pool if c["tab"] == t and c["key"] not in keys and c["key"] not in taken and c["key"] not in state["rejected"]
                                   and re.sub(r"[^a-z0-9]+", "", fold(c["name"])) not in names and name_key(c["name"], c["place"]) not in seen_names],
-                                 key=lambda c: (-c["clicks"], c["name"]))
+                                 key=lambda c: (0 if c.get("br") and (t != "fora" or c.get("sport")) else 1, -c["clicks"], c["name"]))   # v42: esporte do Brasil primeiro
                   tried = 0
                   while queue and len(added[t]) < room and tried < 40 and time.time() < deadline:
                       batch, queue = queue[: max(4, (room - len(added[t])) * 2)], queue[max(4, (room - len(added[t])) * 2):]
@@ -797,6 +868,10 @@ jobs:
                           upd.update(id=slug(c["key"]), addedAt=now_iso(), okAt=now_iso(), fails=0)
                           for k in ("clicks", "ext"): upd.pop(k, None)
                           added[t].append(upd); taken.add(c["key"]); seen_names.add(nk)
+              # v42: palpites de rádios de esporte do Brasil na StreamTheWorld (1 vez por semana); só entram as que tocam.
+              room_sports = MAX_TAB - sum(1 for s in kept if s["tab"] == "sports") - len(added["sports"])
+              pal, pal_tried = try_palpites(state, keys, taken, deadline) if room_sports > 0 else ([], None)
+              added["sports"].extend(pal[: max(0, room_sports)])
               for t in TABS: kept.extend(added[t])
 
               # 3) Grava o estado, publica e resume.
@@ -804,6 +879,7 @@ jobs:
               state["stations"] = kept
               state["searchedAt"] = now_iso()
               state["tabs"] = TABS
+              state["versao"] = SEARCH_V
               state["nextAt"] = now_iso(time.time() + (EVERY_H if ok_search else min(EVERY_H, 3)) * 3600)
               hist = state.setdefault("history", [])
               hist.append({"at": state["searchedAt"], "added": {t: [s["name"] for s in added[t]] for t in TABS if added[t]}, "removed": [s["name"] for s in removed]})
@@ -816,6 +892,11 @@ jobs:
               for t in TABS:
                   if added[t]: print(f"  {TAB_NAME[t]}: " + ", ".join(f"{s['name']} ({s['place']})" for s in added[t]))
               for s in removed: print(f"  RETIRADA: {s['name']} ({s.get('lastError', '')})")
+              br_sports = sum(1 for s in pub if s["tab"] == "sports" and br_of(s)) + sum(1 for s in pub if s["tab"] == "fora" and br_of(s) and sport_of(s))
+              pal_line = (f"Palpites de rádios de esporte do Brasil na StreamTheWorld: {pal_tried} nomes testados; "
+                          f"{'confirmadas: ' + ', '.join(s['name'] for s in pal) if pal else 'nenhuma confirmada desta vez'} (próximo teste em {PALPITES_DAYS} dias).") if pal_tried is not None else ""
+              print(f"  Esporte do Brasil descoberto no site: {br_sports} rádios.")
+              if pal_line: print("  " + pal_line)
               if not ok_search: print("::warning title=Rádios novas::o diretório Radio Browser não respondeu; nova tentativa em 3 horas.")
               if os.environ.get("GITHUB_STEP_SUMMARY"):
                   with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
@@ -829,6 +910,8 @@ jobs:
                           f.write("\nRetiradas (sem áudio em " + str(MAX_FAILS) + " buscas seguidas): " + ", ".join(s["name"] for s in removed) + "\n")
                       if not ok_search:
                           f.write("\nO diretório Radio Browser não respondeu; nova tentativa em 3 horas.\n")
+                      f.write(f"\nEsporte do Brasil (v42): {br_sports} rádios descobertas no site (abas Esportes e Fora da empresa); elas passam na frente na busca diária.\n")
+                      if pal_line: f.write("\n" + pal_line + "\n")
                       f.write("\nNas abas normais só entram rádios da StreamTheWorld (as que tocam na rede da empresa); em \"Fora da empresa\", rádios de outros servidores (https). Todas responderam com áudio a partir do GitHub.\n")
               return 0
 
@@ -1402,7 +1485,11 @@ jobs:
       # Podcasts (v30): a cada 6 horas o GitHub procura no catálogo do Apple Podcasts os episódios mais novos dos
       # podcasts da lista do site (bloco podcasts-lista do index.html) e publica podcasts.json. Também descobre o
       # endereço final do áudio dos 3 episódios mais novos (sem os serviços de estatística, que algumas redes bloqueiam).
-      # Variáveis opcionais: PODCASTS_A_CADA_HORAS (padrão 6), PODCASTS_EPISODIOS (padrão 20 por podcast).
+      # v41: descobre podcasts e audiolivros hospedados no Spotify for Creators (o servidor que toca na AVD) em 146 buscas
+      # e 12 abas, aos poucos (30 buscas a cada execução), acumulando os novos toda semana até o limite de cada aba.
+      # Variáveis opcionais: PODCASTS_A_CADA_HORAS (padrão 6), PODCASTS_EPISODIOS (padrão 20 por podcast),
+      # PODCASTS_AUTO_POR_ABA (padrão 20), AUDIOLIVROS_AUTO_POR_ABA (padrão 40), PODCASTS_AUTO_EPISODIOS (padrão 12),
+      # PODCASTS_BUSCAS_POR_VEZ (padrão 30), PODCASTS_SERVIDORES_AVD (padrão d3ctxlq1ktw2nl.cloudfront.net).
       - name: Restaurar a lista de podcasts
         uses: actions/cache/restore@v5
         with:
@@ -1421,6 +1508,8 @@ jobs:
           PODCASTS_AUTO_POR_ABA: ${{ vars.PODCASTS_AUTO_POR_ABA }}
           AUDIOLIVROS_AUTO_POR_ABA: ${{ vars.AUDIOLIVROS_AUTO_POR_ABA }}
           PODCASTS_SERVIDORES_AVD: ${{ vars.PODCASTS_SERVIDORES_AVD }}
+          PODCASTS_AUTO_EPISODIOS: ${{ vars.PODCASTS_AUTO_EPISODIOS }}
+          PODCASTS_BUSCAS_POR_VEZ: ${{ vars.PODCASTS_BUSCAS_POR_VEZ }}
         run: |
           cat > /tmp/podcasts.py <<'SCRIPT'
           import gzip, hashlib, json, os, re, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
@@ -1516,8 +1605,8 @@ jobs:
           def natural(s):
               return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", fold(s))]
 
-          def episodes(info, country, book=False):
-              res, _ = lookup({"id": info["collectionId"], "media": "podcast", "entity": "podcastEpisode", "limit": 200 if book else EPISODES}, country)
+          def episodes(info, country, book=False, limit=None):
+              res, _ = lookup({"id": info["collectionId"], "media": "podcast", "entity": "podcastEpisode", "limit": 200 if book else (limit or EPISODES)}, country)
               eps = []
               for r in res:
                   if r.get("wrapperType") != "podcastEpisode": continue
@@ -1535,38 +1624,71 @@ jobs:
           # toca na rede da empresa (AVD). Hoje é o do Spotify for Creators (antigo anchor.fm), d3ctxlq1ktw2nl.cloudfront.net:
           # o único servidor de podcasts/audiolivros que tocou no teste da AVD (23/11/2026); Redcircle, Castbox, Megaphone e
           # Podtrac foram bloqueados. Outros servidores: variável PODCASTS_SERVIDORES_AVD (separados por vírgula).
+          # v41: muito mais buscas (146, em 12 abas, incluindo Negócios, Saúde, Educação, Cultura e Audiolivros infantis),
+          # até 200 resultados por busca e mais programas por aba. A busca roda aos poucos (PODCASTS_BUSCAS_POR_VEZ por execução,
+          # a cada 15 min) e os achados se acumulam: cada semana entram os novos, até o limite de cada aba.
           AVD_HOSTS = [h.strip().lower() for h in (os.environ.get("PODCASTS_SERVIDORES_AVD") or "d3ctxlq1ktw2nl.cloudfront.net").split(",") if h.strip()]
-          AUTO_MAX = int(num("AUDIOLIVROS_AUTO_POR_ABA", 15, 0, 40))      # audiolivros por aba (Em português, Outros idiomas)
-          AUTO_POD_MAX = int(num("PODCASTS_AUTO_POR_ABA", 8, 0, 30))      # podcasts por aba (Notícias, Humor, Ciência, Histórias, Esportes)
-          AUTO_DAYS = 7          # refaz a busca a cada 7 dias (ou na hora, se a lista de buscas mudar)
-          AUTO_REFRESH_H = 24    # episódios dos descobertos: 1 vez por dia (os da lista fixa: a cada 6 h)
-          BOOK_TABS = ("livros-pt", "livros-outros")
-          DISCOVER = [
-              # Audiolivros: (busca, loja, aba, idioma)
-              ("audiolivro completo", "BR", "livros-pt", "pt"), ("audiolivro", "BR", "livros-pt", "pt"), ("audiobook em português", "BR", "livros-pt", "pt"),
-              ("audiobook completo", "BR", "livros-pt", "pt"), ("livro narrado", "BR", "livros-pt", "pt"), ("contos narrados", "BR", "livros-pt", "pt"),
-              ("literatura brasileira em áudio", "BR", "livros-pt", "pt"), ("machado de assis audiolivro", "BR", "livros-pt", "pt"),
-              ("audiolibro completo", "US", "livros-outros", "es"), ("audiolibros", "US", "livros-outros", "es"), ("cuentos narrados", "US", "livros-outros", "es"),
-              ("full audiobook", "US", "livros-outros", "en"), ("librivox audiobook", "US", "livros-outros", "en"), ("public domain audiobook", "US", "livros-outros", "en"),
-              ("classic audiobook", "US", "livros-outros", "en"), ("short stories audiobook", "US", "livros-outros", "en"),
-              # Podcasts em português (v34)
-              ("notícias", "BR", "noticias", "pt"), ("política", "BR", "noticias", "pt"), ("jornalismo", "BR", "noticias", "pt"), ("economia", "BR", "noticias", "pt"),
-              ("humor", "BR", "humor", "pt"), ("entrevistas", "BR", "humor", "pt"), ("bate papo", "BR", "humor", "pt"), ("comédia", "BR", "humor", "pt"),
-              ("ciência", "BR", "ciencia", "pt"), ("tecnologia", "BR", "ciencia", "pt"), ("divulgação científica", "BR", "ciencia", "pt"), ("programação", "BR", "ciencia", "pt"),
-              ("true crime", "BR", "historias", "pt"), ("crimes reais", "BR", "historias", "pt"), ("histórias de terror", "BR", "historias", "pt"), ("história do brasil", "BR", "historias", "pt"),
-              ("futebol", "BR", "esportes", "pt"), ("esportes", "BR", "esportes", "pt"), ("nba", "BR", "esportes", "pt"), ("fórmula 1", "BR", "esportes", "pt"),
-          ]
+          AUTO_MAX = int(num("AUDIOLIVROS_AUTO_POR_ABA", 40, 0, 120))     # audiolivros por aba (Em português, Infantis, Outros idiomas)
+          AUTO_POD_MAX = int(num("PODCASTS_AUTO_POR_ABA", 20, 0, 60))     # podcasts por aba (9 abas)
+          AUTO_EPISODES = int(num("PODCASTS_AUTO_EPISODIOS", 12, 3, 60))  # episódios guardados de cada podcast descoberto (podcasts.json mais leve)
+          TERMS_PER_RUN = int(num("PODCASTS_BUSCAS_POR_VEZ", 30, 1, 400)) # buscas no catálogo por execução
+          DISCOVER_S = num("PODCASTS_MINUTOS_BUSCA", 2, 0.1, 10) * 60     # tempo máximo da busca por execução
+          AUTO_DAYS = 7          # recomeça as buscas a cada 7 dias (ou na hora, se a lista de buscas mudar)
+          AUTO_REFRESH_H = 24    # episódios dos podcasts descobertos: 1 vez por dia (os da lista fixa: a cada 6 h)
+          AUTO_BOOK_REFRESH_H = 24 * 7   # audiolivros descobertos quase não mudam: 1 vez por semana
+          MAX_AGE_DAYS = {"noticias": 45, "esportes": 180}   # podcast parado há mais tempo que isso fica de fora (demais abas: 2 anos)
+          BOOK_TABS = ("livros-pt", "livros-infantis", "livros-outros")
+          POD_TABS = ("noticias", "humor", "ciencia", "historias", "esportes", "negocios", "saude", "educacao", "cultura")
+          SEARCHES = {
+              # Audiolivros: (busca, loja, idioma)
+              "livros-pt": [(t, "BR", "pt") for t in (
+                  "audiolivro", "audiolivro completo", "audiolivros", "audiobook em português", "audiobook completo", "livro narrado", "livros narrados",
+                  "contos narrados", "literatura brasileira em áudio", "machado de assis audiolivro", "domínio público áudio", "clássicos da literatura audiolivro",
+                  "livro em áudio", "crônicas narradas", "poemas narrados", "conto narrado", "eça de queirós audiolivro", "josé de alencar audiolivro",
+                  "lima barreto audiolivro", "aluísio azevedo audiolivro", "leitura em voz alta", "audiolivro romance", "audiolivro terror", "audiolivro grátis")],
+              "livros-infantis": [(t, "BR", "pt") for t in (
+                  "histórias infantis", "histórias para dormir", "historinhas", "contos de fadas", "histórias para crianças", "audiolivro infantil",
+                  "era uma vez", "fábulas", "contação de histórias", "historinhas para dormir", "livro infantil narrado")],
+              "livros-outros": [(t, "US", "en") for t in (
+                  "full audiobook", "librivox audiobook", "public domain audiobook", "classic audiobook", "short stories audiobook", "audiobooks",
+                  "classic literature audiobook", "sherlock holmes audiobook", "read aloud books", "poetry audiobook", "jane austen audiobook",
+                  "edgar allan poe audiobook", "bedtime stories audiobook")] + [(t, "US", "es") for t in (
+                  "audiolibro completo", "audiolibros", "cuentos narrados", "audiolibros clásicos", "audiolibro en español", "libros narrados",
+                  "relatos narrados", "audiolibro gratis")],
+              # Podcasts em português (v34 + v41)
+              "noticias": [(t, "BR", "pt") for t in ("notícias", "política", "jornalismo", "economia", "notícias do dia", "resumo de notícias", "análise política", "geopolítica", "atualidades", "mercado financeiro hoje")],
+              "humor": [(t, "BR", "pt") for t in ("humor", "entrevistas", "bate papo", "comédia", "stand up", "resenha", "papo de boteco", "talk show", "conversa", "podcast de humor")],
+              "ciencia": [(t, "BR", "pt") for t in ("ciência", "tecnologia", "divulgação científica", "programação", "inteligência artificial", "astronomia", "física", "biologia", "inovação", "cibersegurança")],
+              "historias": [(t, "BR", "pt") for t in ("true crime", "crimes reais", "histórias de terror", "história do brasil", "mistérios", "casos reais", "histórias reais", "lendas urbanas", "história mundial", "investigação criminal")],
+              "esportes": [(t, "BR", "pt") for t in ("futebol", "esportes", "nba", "fórmula 1", "futebol brasileiro", "brasileirão", "corrida de rua", "vôlei", "mma", "tênis")],
+              "negocios": [(t, "BR", "pt") for t in ("empreendedorismo", "negócios", "finanças pessoais", "investimentos", "marketing digital", "carreira", "liderança", "vendas", "educação financeira", "produtividade")],
+              "saude": [(t, "BR", "pt") for t in ("saúde mental", "bem-estar", "psicologia", "meditação", "nutrição", "autoconhecimento", "ansiedade", "saúde", "atividade física", "sono")],
+              "educacao": [(t, "BR", "pt") for t in ("aprender inglês", "inglês", "espanhol", "educação", "filosofia", "história", "concursos", "enem", "língua portuguesa", "sociologia")],
+              "cultura": [(t, "BR", "pt") for t in ("cinema", "séries", "games", "música", "literatura", "cultura pop", "anime", "quadrinhos", "música brasileira", "arte")],
+          }
+          # Intercala as abas (1ª busca de cada aba, depois a 2ª...): desde a 1ª execução todas as abas ganham programas.
+          DISCOVER = []
+          for _i in range(max(len(v) for v in SEARCHES.values())):
+              for _tab, _terms in SEARCHES.items():
+                  if _i < len(_terms): DISCOVER.append((_terms[_i][0], _terms[_i][1], _tab, _terms[_i][2]))
           CFG = hashlib.sha1(json.dumps([DISCOVER, AVD_HOSTS, AUTO_MAX, AUTO_POD_MAX]).encode()).hexdigest()[:12]
-          BOOKISH = re.compile(r"\b(audio ?livros?|audio ?books?|audio ?libros?|livros? narrados?|livros? em audio|contos? narrados?|cuentos? narrados?|librivox)\b")
+          BOOKISH = re.compile(r"\b(audio ?livros?|audio ?books?|audio ?libros?|livros? (narrados?|em audio|falados?|para ouvir|lidos?)|contos? (narrados?|lidos?|em audio)|"
+                               r"cuentos? (narrados?|leidos?)|relatos? narrados?|cronicas? narradas?|poemas? (narrados?|declamados?)|poesias? (narradas?|declamadas?|falada)|"
+                               r"literatura (em audio|narrada|falada)|dominio publico|leituras? (de ouvido|em voz alta|narradas?)|librivox|read aloud|"
+                               r"public domain (books?|stories|audio)|libros? (narrados?|leidos?|en audio))\b")
+          KIDS = re.compile(r"\b(historias? (infanti[ls]|para (dormir|criancas?|ninar))|historinhas?|contos? (de fadas|infanti[ls])|era uma vez|fabulas?|"
+                            r"audio ?livros? infanti[ls]|contacao de historias|livros? infanti[ls]|bedtime stories|cuentos? infantiles)\b")
           ANCHOR_FEED = re.compile(r"^https?://(www\.)?anchor\.fm/s/[0-9a-f]+/podcast/rss", re.I)
           RELIG = re.compile(r"\b(biblia|bible|biblical|jesus|cristo|christ|christian|crista|cristao|igreja|church|evangel\w*|gospel|sermao|sermon|pregacao|preaching|"
                              r"louvor|worship|oracao|prayer|devocional|devotional|catolic\w*|catholic|espirita|espiritismo|umbanda|candomble|islam\w*|quran|torah|"
                              r"rosario|terco|pastor|padre|apostolo|salmos?|psalms?)\b")
           RELIG_GENRE = re.compile(r"relig|spiritual|espiritual|christian|cristianismo|judaism|juda[ií]smo|islam|hindu|buddh|budismo", re.I)
           CLIPS = re.compile(r"\b(cortes?|clips?|melhores momentos)\b")
-          EN_WORDS = re.compile(r"\b(the|and|of|with|your|my|our|show|daily|weekly|talk|life|world|stories|story|true|podcast network)\b")
-          PT_WORDS = re.compile(r"\b(de|do|da|dos|das|com|e|na|no|nas|nos|para|um|uma|que|os|as|sobre|papo|brasil|historias?|noticias|futebol|ciencia|tecnologia|"
-                                r"humor|crimes?|resenha|conversa|politica|economia|esportes?|misterios?|terror|casos?)\b")
+          EN_WORDS = re.compile(r"\b(the|and|of|with|your|my|our|show|daily|weekly|talk|life|world|stories|story|true|podcast network|collection|classics?|"
+                                r"books?|read|reading|tales|short|sleep|bedtime|kids|children|for|from|to|in|is)\b")
+          PT_WORDS = re.compile(r"\b(de|do|da|dos|das|com|e|o|em|na|no|nas|nos|para|pra|por|um|uma|que|os|as|sobre|papo|brasil|historias?|noticias|futebol|ciencia|tecnologia|"
+                                r"humor|crimes?|resenha|conversa|politica|economia|esportes?|misterios?|terror|casos?|livros?|contos?|audiolivros?|historinhas?|criancas|"
+                                r"infanti[ls]|dormir|classicos|literatura|leituras?|brasileira|portugues|narrados?|narradas?)\b")
 
           def looks_pt(name, artist):
               raw = f"{name} {artist}"
@@ -1605,35 +1727,53 @@ jobs:
               u = re.sub(r"^http://", "https://", u)
               return u if u != re.sub(r"^http://", "https://", url or "") else None
 
-          def discover(known, curated):
-              """Procura no catálogo da Apple podcasts e audiolivros hospedados no anchor (toca na AVD); devolve definições novas por aba."""
-              found, per_tab = [], {}
+          def why_not(r, tab, lang, curated):
+              """Motivo para deixar o programa de fora (None = entra). Só entram programas hospedados no anchor (toca na AVD)."""
+              if not ANCHOR_FEED.match(str(r.get("feedUrl") or "")): return "fora do servidor da AVD"
+              name, artist = str(r.get("collectionName") or ""), str(r.get("artistName") or "")
+              genres = " ".join([str(r.get("primaryGenreName") or "")] + [str(g) for g in (r.get("genres") or [])])
+              n = fold(name)
+              if len(n) < 3: return "nome curto"
+              if RELIG.search(fold(f"{name} {artist}")) or RELIG_GENRE.search(genres): return "religioso"
+              tracks = r.get("trackCount") or 0
+              if tab in BOOK_TABS:
+                  if not (KIDS if tab == "livros-infantis" else BOOKISH).search(n) or tracks < 2: return "não parece audiolivro"
+                  if tab != "livros-outros" and not looks_pt(name, artist): return "não parece português"
+                  return None
+              if BOOKISH.search(n) or KIDS.search(n) or CLIPS.search(n) or tracks < 5: return "audiolivro, cortes ou poucos episódios"
+              if NOW - parse_date(r.get("releaseDate")) > MAX_AGE_DAYS.get(tab, 730) * 86400: return "parado"
+              if lang == "pt" and not looks_pt(name, artist): return "não parece português"
+              if any(matches(d, name, artist) for d in curated): return "já está na lista (ou é um canal de cortes dele)"
+              return None
+
+          def discover(auto, known, curated):
+              """v41: continua as buscas de onde parou (no máximo TERMS_PER_RUN buscas ou DISCOVER_S segundos por execução) e
+              acumula os programas novos hospedados no anchor (toca na AVD), até o limite de cada aba. Devolve quantos entraram."""
+              items = auto.setdefault("items", [])
+              per_tab = {}
+              for a in items: per_tab[a["tab"]] = per_tab.get(a["tab"], 0) + 1
               cap = lambda tab: AUTO_MAX if tab in BOOK_TABS else AUTO_POD_MAX
-              for term, country, tab, lang in DISCOVER:
-                  if per_tab.get(tab, 0) >= cap(tab): continue
-                  q = urllib.parse.urlencode({"media": "podcast", "entity": "podcast", "limit": 50, "country": country, "term": term})
-                  res = itunes(f"https://itunes.apple.com/search?{q}").get("results", []); time.sleep(GAP_S)
-                  book = tab in BOOK_TABS
-                  for r in res:
-                      cid = r.get("collectionId")
-                      if not isinstance(cid, int) or cid in known or per_tab.get(tab, 0) >= cap(tab): continue
-                      if not ANCHOR_FEED.match(str(r.get("feedUrl") or "")): continue
-                      name, artist = str(r.get("collectionName") or ""), str(r.get("artistName") or "")
-                      genres = " ".join([str(r.get("primaryGenreName") or "")] + [str(g) for g in (r.get("genres") or [])])
-                      n = fold(name)
-                      if len(n) < 3 or RELIG.search(fold(f"{name} {artist}")) or RELIG_GENRE.search(genres): continue
-                      if book:
-                          if not BOOKISH.search(n) or (r.get("trackCount") or 0) < 2: continue
-                      else:
-                          if BOOKISH.search(n) or CLIPS.search(n) or (r.get("trackCount") or 0) < 8: continue
-                          if NOW - parse_date(r.get("releaseDate")) > 120 * 86400: continue        # parado há mais de 4 meses
-                          if lang == "pt" and not looks_pt(name, artist): continue
-                          if any(matches(d, name, artist) for d in curated): continue                # já está na lista (ou é um canal de cortes dele)
-                      known.add(cid); per_tab[tab] = per_tab.get(tab, 0) + 1
-                      found.append({"id": f"auto-{cid}", "name": clean(name, 120), "cid": cid, "tab": tab, "lang": lang, "book": book, "country": country, "auto": True,
-                                    "info": {"collectionId": cid, "name": clean(name, 120), "artist": clean(artist, 120),
-                                             "art": r.get("artworkUrl600") or r.get("artworkUrl100") or "", "link": r.get("collectionViewUrl", ""), "resolvedAt": NOW}})
-              return found
+              cursor, added, t0, done = int(auto.get("cursor") or 0), 0, time.time(), 0
+              while cursor < len(DISCOVER) and done < TERMS_PER_RUN and time.time() - t0 < DISCOVER_S:
+                  term, country, tab, lang = DISCOVER[cursor]
+                  if per_tab.get(tab, 0) < cap(tab):
+                      q = urllib.parse.urlencode({"media": "podcast", "entity": "podcast", "limit": 200, "country": country, "term": term})
+                      res = itunes(f"https://itunes.apple.com/search?{q}").get("results", []); time.sleep(GAP_S)   # RateLimited: para aqui e continua na próxima
+                      done += 1
+                      for r in res:
+                          cid = r.get("collectionId")
+                          if not isinstance(cid, int) or cid in known or per_tab.get(tab, 0) >= cap(tab): continue
+                          if why_not(r, tab, lang, curated): continue
+                          name, artist = str(r.get("collectionName") or ""), str(r.get("artistName") or "")
+                          known.add(cid); per_tab[tab] = per_tab.get(tab, 0) + 1; added += 1
+                          items.append({"id": f"auto-{cid}", "name": clean(name, 120), "cid": cid, "tab": tab, "lang": lang, "book": tab in BOOK_TABS, "country": country, "auto": True,
+                                        "info": {"collectionId": cid, "name": clean(name, 120), "artist": clean(artist, 120),
+                                                 "art": r.get("artworkUrl600") or r.get("artworkUrl100") or "", "link": r.get("collectionViewUrl", ""), "resolvedAt": NOW}})
+                  cursor += 1
+                  auto["cursor"] = cursor
+              if cursor >= len(DISCOVER):   # rodada completa: recomeça daqui a AUTO_DAYS dias
+                  auto.update({"cursor": 0, "at": NOW})
+              return added
 
           SIGNED = re.compile(r"(expires|signature|x-amz-|token|policy|key-pair|hdnts|exp=)", re.I)
           def final_url(url):
@@ -1663,20 +1803,34 @@ jobs:
                           prev = get_json(f"{site}/podcasts.json"); print("lista anterior recuperada do site")
                       except Exception as e:
                           print(f"sem lista anterior no site ({e})")
-              due = NOW >= float(st.get("nextAt") or 0)
+              prev_next = float(st.get("nextAt") or 0)
+              due = time_due = NOW >= prev_next
               start = time.time()
               auto = st.get("auto") or {}
-              if (AUTO_MAX or AUTO_POD_MAX) and (NOW - float(auto.get("at") or 0) > AUTO_DAYS * 86400 or auto.get("cfg") != CFG):
+              # v41: os achados da v34 continuam (se a aba ainda existir); a busca continua de onde parou.
+              auto["items"] = [a for a in auto.get("items", []) if isinstance(a, dict) and a.get("id") and a.get("tab") in BOOK_TABS + POD_TABS and isinstance(a.get("cid"), int)]
+              auto_changed, disc_note = False, ""
+              if auto.get("cfg") != CFG:
+                  auto.update({"cfg": CFG, "cursor": 0, "at": 0}); auto_changed = True
+              if (AUTO_MAX or AUTO_POD_MAX) and (int(auto.get("cursor") or 0) > 0 or NOW - float(auto.get("at") or 0) > AUTO_DAYS * 86400):
                   curated_ids = {d["id"] for d in defs}
-                  known = {d["cid"] for d in defs if isinstance(d.get("cid"), int)} | {i.get("collectionId") for k, i in (st.get("resolved") or {}).items() if k in curated_ids}
+                  known = ({d["cid"] for d in defs if isinstance(d.get("cid"), int)} | {i.get("collectionId") for k, i in (st.get("resolved") or {}).items() if k in curated_ids}
+                           | {a["cid"] for a in auto["items"]} | set(auto.get("rejected") or []))
+                  first = int(auto.get("cursor") or 0)
                   try:
-                      items = discover(known, [d for d in defs if d.get("match")]); auto = {"at": NOW, "cfg": CFG, "items": items}; due = True
-                      books = sum(1 for a in items if a.get("book"))
-                      print(f"descobertos no anchor (tocam na AVD): {len(items) - books} podcasts e {books} audiolivros")
+                      added = discover(auto, known, [d for d in defs if d.get("match")])
+                  except RateLimited:
+                      added = None
                   except Exception as e:
-                      print(f"descoberta de podcasts e audiolivros falhou ({e}); mantida a anterior, nova tentativa em 1 hora")
-                      auto = {**auto, "at": NOW - AUTO_DAYS * 86400 + 3600, "cfg": CFG}
-              auto_items = [a for a in auto.get("items", []) if isinstance(a, dict) and a.get("id")]
+                      added = None; print(f"descoberta de podcasts e audiolivros falhou ({str(e)[:120]}); continua na próxima execução")
+                  auto_changed = True
+                  last = int(auto.get("cursor") or 0) or len(DISCOVER)
+                  books = sum(1 for a in auto["items"] if a.get("book"))
+                  disc_note = (f"Busca de programas compatíveis com a AVD: buscas {first + 1}–{last} de {len(DISCOVER)}"
+                               f"{' (o Apple Podcasts pediu uma pausa; continua na próxima execução)' if added is None else ''}; {added or 0} novos nesta execução; "
+                               f"total descobertos: {len(auto['items']) - books} podcasts e {books} audiolivros.")
+                  print(disc_note)
+              auto_items = auto["items"]
               defs = defs + [a for a in auto_items if all(d["id"] != a["id"] for d in defs)]
               # v32: podcast ou audiolivro novo na lista do site (index.html novo) = atualiza já, sem esperar as 6 h.
               seen = set(st.get("seen") or [s.get("id") for s in prev.get("shows", []) if isinstance(s, dict)])
@@ -1686,17 +1840,24 @@ jobs:
               if not due and prev.get("shows"):
                   OUT.write_text(json.dumps(prev, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
                   print(f"podcasts: próxima atualização em {iso(float(st['nextAt']))}; republicada a lista de {prev.get('updatedAt')}")
-                  out("salvar", "false"); return 0
+                  if auto_changed:   # a busca andou: guarda onde parou
+                      STATE.write_text(json.dumps({**st, "auto": auto}, ensure_ascii=False), encoding="utf-8")
+                      if disc_note: summary(f"\n### Podcasts e audiolivros\n\n{disc_note}\n")
+                  out("salvar", "true" if auto_changed else "false"); return 0
 
               resolved = st.get("resolved") or {}
               for a in auto_items:
                   if a["id"] not in resolved and a.get("info"): resolved[a["id"]] = a["info"]
               prev_shows = {s.get("id"): s for s in prev.get("shows", []) if isinstance(s, dict)}
               shows, rows, pending, limited = [], [], False, False
+              rejected = set(auto.get("rejected") or [])
               for d in defs:
                   old = prev_shows.get(d["id"])
-                  if d.get("auto") and old and NOW - float(old.get("at") or 0) < AUTO_REFRESH_H * 3600:
-                      shows.append(old); rows.append(f"| {d['name']} | mantido (descoberto; episódios atualizados 1 vez por dia) |"); continue
+                  if d.get("auto") and old and NOW - float(old.get("at") or 0) < (AUTO_BOOK_REFRESH_H if d.get("book") else AUTO_REFRESH_H) * 3600:
+                      shows.append(old); rows.append(f"| {d['name']} | mantido (descoberto; episódios atualizados 1 vez por {'semana' if d.get('book') else 'dia'}) |"); continue
+                  # v41: os da lista fixa só voltam ao catálogo a cada PODCASTS_A_CADA_HORAS (a busca de novos não força tudo de novo).
+                  if not d.get("auto") and old and NOW - float(old.get("at") or 0) < EVERY_H * 3600 - 600:
+                      shows.append(old); rows.append(f"| {d['name']} | mantido (atualizado há menos de {EVERY_H:g} h) |"); continue
                   if limited or time.time() - start > BUDGET_S:
                       pending = True
                       if old: shows.append(old)
@@ -1710,7 +1871,7 @@ jobs:
                               if old: shows.append(old)
                               rows.append(f"| {d['name']} | não encontrado no Apple Podcasts{' (mantido o anterior)' if old else ''} |"); continue
                           resolved[d["id"]] = info
-                      eps = episodes(info, d.get("country") or "BR", bool(d.get("book"))); time.sleep(GAP_S)
+                      eps = episodes(info, d.get("country") or "BR", bool(d.get("book")), AUTO_EPISODES if d.get("auto") else None); time.sleep(GAP_S)
                       if not eps:
                           if old: shows.append(old)
                           rows.append(f"| {d['name']} | sem episódios no catálogo |"); continue
@@ -1720,12 +1881,12 @@ jobs:
                       for e in eps:   # anchor: o endereço do arquivo vem dentro do link (servidor que toca na AVD)
                           uw = unwrap(e["url"])
                           if not e.get("direct") and uw and (urllib.parse.urlsplit(uw).hostname or "").lower() in AVD_HOSTS: e["direct"] = uw
-                      if d.get("auto") and avd_host(eps[0]) not in AVD_HOSTS:
-                          rows.append(f"| {d['name']} | ignorado (o áudio não fica num servidor que toca na AVD) |"); continue
+                      if d.get("auto") and avd_host(eps[0]) not in AVD_HOSTS:   # v41: sai da lista de descobertos e não volta
+                          rejected.add(d["cid"]); rows.append(f"| {d['name']} | retirado (o áudio não fica num servidor que toca na AVD) |"); continue
                       if d.get("book") or d.get("auto"):   # audiolivro (até 200 capítulos) e descobertos: só o endereço do arquivo (podcasts.json mais leve)
                           for e in eps:
                               if e.get("direct"): e["url"] = e.pop("direct")
-                      show = {"id": d["id"], "name": info["name"] or d["name"], "artist": info["artist"], "art": info["art"], "link": info["link"], "episodes": eps, "at": NOW}
+                      show = {"id": d["id"], "name": info["name"] or d["name"], "artist": info["artist"], "art": info["art"], "link": info["link"], "cid": info.get("collectionId"), "episodes": eps, "at": NOW}
                       if d.get("auto"): show.update({"tab": d["tab"], "lang": d["lang"], "book": bool(d.get("book")), "auto": True})
                       shows.append(show)
                       last = max(e["date"] for e in eps)[:10]
@@ -1743,14 +1904,20 @@ jobs:
               with ThreadPoolExecutor(8) as pool:
                   for e, end in zip(todo, pool.map(lambda e: final_url(e["url"]), todo)):
                       if end and end != e["url"]: e["direct"] = end
+              if rejected:
+                  auto["rejected"] = sorted(rejected)[-2000:]
+                  auto["items"] = [a for a in auto["items"] if a["cid"] not in rejected]
+                  shows = [s_ for s_ in shows if not (s_.get("auto") and s_.get("cid") in rejected)]
               data = {"updatedAt": iso(NOW), "shows": shows}
               OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-              next_at = NOW + (3600 if limited else 900 if pending else EVERY_H * 3600)
+              # v41: execução puxada só por programas novos não adia a atualização normal (a cada PODCASTS_A_CADA_HORAS).
+              next_at = NOW + 3600 if limited else NOW + 900 if pending else (NOW + EVERY_H * 3600 if time_due or not prev_next else prev_next)
               seen_now = [d["id"] for d in defs if not pending or any(s["id"] == d["id"] for s in shows)]
               STATE.write_text(json.dumps({"data": data, "resolved": resolved, "nextAt": next_at, "seen": seen_now, "auto": auto}, ensure_ascii=False), encoding="utf-8")
               out("salvar", "true")
               total = sum(len(s["episodes"]) for s in shows)
-              summary(f"\n### Podcasts e audiolivros\n\n{len(shows)} de {len(defs)} podcasts e audiolivros, {total} episódios. Próxima atualização: {iso(next_at)}.\n\n| Podcast | Situação |\n|---|---|\n" + "\n".join(rows) + "\n")
+              summary(f"\n### Podcasts e audiolivros\n\n{len(shows)} de {len(defs)} podcasts e audiolivros, {total} episódios. Próxima atualização: {iso(next_at)}.\n\n"
+                      + (f"{disc_note}\n\n" if disc_note else "") + "| Podcast | Situação |\n|---|---|\n" + "\n".join(rows) + "\n")
               if not shows: print("::warning title=Podcasts::nenhum podcast foi encontrado nesta execução")
               return 0
 
